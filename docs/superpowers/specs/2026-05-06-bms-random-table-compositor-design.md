@@ -698,7 +698,64 @@ make clean            # build/, frontend/dist/ 等を削除
 - フロントエンド: 設定画面のUI規約は `docs/style-guide.md` に従う
 - マニュアル: ユーザー向けは `docs/manual.md`。機能追加時に更新
 
-## 14. 将来拡張（v2以降）
+## 14. 実装フェーズ
+
+実装は2段階に分ける。
+
+### Phase 0: POC（技術検証）
+
+**目的**: 「Wails GUI + 同一プロセス内のローカルHTTPサーバ + GUIから設定値を反映してサーバを起動」という本プロジェクト最大の技術リスクを最小コストで検証する。
+
+**配置**: `poc/` ディレクトリに**別Goモジュール**（`poc/go.mod`）として作成。`wails init -n bms-rtc-poc -t svelte-ts -d poc` 等で生成。POC完了後も削除せず参照用として保持する（学習資源として残す）。
+
+**スコープ（最小）**:
+
+- Wailsアプリ起動 → Svelte画面が表示される
+- 画面: ポート番号入力フォーム + 「保存して起動」ボタンのみ
+- 入力したポート番号は適当な永続化方法（POC用 `./poc-config.json` 等）でディスクに保存
+- 「保存して起動」を押すとGoバックエンドで `net/http` サーバを goroutine 起動
+- `GET http://localhost:<port>/` で固定JSON応答（例: `{"hello":"world"}`）
+- ポート確保失敗時は GUI に簡易エラー表示
+
+**スコープ外（POCでは省略）**:
+
+- システムトレイ常駐（`OnBeforeClose` で `WindowHide` する挙動も含めて）
+- シングルインスタンスロック
+- SQLite / マイグレーション
+- ソース表取り込み / ピック / 所持判定
+- ロギング（標準出力で十分）
+- テスト（手動確認のみ）
+
+**完了基準**:
+
+- macOS で `wails dev` 経由で動作確認
+- macOS で `wails build` した成果物（.app）でも動作確認
+- Windows で `wails build` クロスビルドした exe でも動作確認（後述: クロスビルドが面倒なら Windows 機/VM で `wails build` 直接でも可）
+- ポートを画面で変更→保存→アクセスのサイクルが動く
+- 確保失敗時に画面にエラーが出る
+- 学んだ知見（Wails の OnStartup/OnBeforeClose の挙動、HTTPサーバの goroutine 起動位置、Bind関数からのサーバ操作の作法、Windowsビルドの注意点）を `poc/NOTES.md` に書き出す
+
+**POC で技術リスクが顕在化した場合**:
+
+- Wails と HTTPサーバの同居が困難 → Phase 1 のアーキテクチャを見直し（プロセス分離 / ブラウザベース化）
+- Windows ビルドに大きな課題 → 開発機・CIフローの方針を再検討
+
+### Phase 1: MVP（本実装）
+
+POC の知見を踏まえ、本ドキュメント 1〜13章および 15〜16章の設計に従って `bms-random-table-compositor` 本体を実装する。`poc/` のコードは引き継がず、設計ドキュメントに従ってクリーンに作る。POC で得たコードスニペットは `poc/NOTES.md` に書き出されているものから参照する。
+
+実装の大まかな順序（実装プラン側で詳細化）:
+
+1. システムトレイ常駐の事前検証（POC の延長で別途確認、`OnBeforeClose` + 選定 systray ライブラリの組み合わせ）
+2. プロジェクト雛形 + DBマイグレーション + ConfigStore
+3. SourceTableFetcher + SourceTableUseCase（ソース表取り込み）
+4. PublishedTable のCRUD + ピックエンジン + 所持判定
+5. HTTPサーバ（3エンドポイント）+ HTMLビュー
+6. GUI（設定画面 / ソース表 / 公開表 / ダッシュボード）
+7. ロギング・エラーハンドリング・シングルインスタンス
+8. 仕上げ（手動E2Eテスト、ドキュメント整備、クロスビルド確認）
+
+## 15. 将来拡張（v2以降）
 
 | 項目 | 概要 |
 |---|---|
@@ -722,7 +779,7 @@ CREATE TABLE published_table_level_mapping (
 );
 ```
 
-## 15. 主要な設計判断のサマリ
+## 16. 主要な設計判断のサマリ
 
 | # | 判断 | 採用 | 理由 |
 |---|---|---|---|
