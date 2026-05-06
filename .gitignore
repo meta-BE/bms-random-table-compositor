@@ -1,0 +1,14 @@
+# Wails build artifacts
+poc/build/bin/
+poc/frontend/dist/
+poc/frontend/node_modules/
+poc/frontend/wailsjs/
+
+# POC runtime artifacts
+poc/poc-config.json
+
+# OS / Editor
+.DS_Store
+*.swp
+.idea/
+.vscode/

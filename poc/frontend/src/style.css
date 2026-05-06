@@ -1,0 +1,10 @@
+:root {
+  color-scheme: light dark;
+}
+body {
+  margin: 0;
+  background: #f5f6f8;
+}
+#app {
+  min-height: 100vh;
+}
