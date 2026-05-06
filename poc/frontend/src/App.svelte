@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { GetConfig, SaveAndStart, Stop, GetStatus } from '../wailsjs/go/main/App';
+  import { GetConfig, SaveAndStart, Stop, GetStatus, OpenURL } from '../wailsjs/go/main/App';
 
   let port: number = 50000;
   let running: boolean = false;
@@ -55,6 +55,12 @@
     }
   }
 
+  function onOpen() {
+    if (running && runningPort > 0) {
+      OpenURL(`http://localhost:${runningPort}/`);
+    }
+  }
+
   onMount(load);
 </script>
 
@@ -65,7 +71,7 @@
     {#if running}
       <span class="dot ok"></span>
       <span>起動中（ポート {runningPort}）</span>
-      <a href={`http://localhost:${runningPort}/`} target="_blank" rel="noreferrer">開く</a>
+      <button class="link-btn" on:click={onOpen}>開く</button>
     {:else}
       <span class="dot off"></span>
       <span>停止中</span>
@@ -109,4 +115,16 @@
   button:disabled { cursor: not-allowed; opacity: 0.6; }
   .message.ok { color: #2e7d32; }
   .message.err { color: #b71c1c; }
+  .link-btn {
+    background: none;
+    border: none;
+    color: #1565c0;
+    text-decoration: underline;
+    cursor: pointer;
+    padding: 0;
+    font: inherit;
+  }
+  .link-btn:hover {
+    color: #0d47a1;
+  }
 </style>

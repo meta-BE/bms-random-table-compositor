@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"time"
+
+	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 // App は Wails のメインアプリオブジェクト。フロントエンドからBind経由で呼ばれる。
@@ -68,6 +70,12 @@ func (a *App) Stop() error {
 	c, cancel := context.WithTimeout(a.ctx, 5*time.Second)
 	defer cancel()
 	return a.server.Stop(c)
+}
+
+// OpenURL は外部ブラウザで指定URLを開く。
+// Wails の webview 内では target="_blank" が機能しないため、ランタイム経由で開く。
+func (a *App) OpenURL(url string) {
+	runtime.BrowserOpenURL(a.ctx, url)
 }
 
 type errPortRange struct{}
