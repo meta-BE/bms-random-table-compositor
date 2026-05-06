@@ -1,4 +1,4 @@
-# Wails build artifacts
+# Wails build artifacts (POC)
 poc/build/bin/
 poc/frontend/dist/
 poc/frontend/node_modules/
@@ -7,8 +7,25 @@ poc/frontend/wailsjs/
 # POC runtime artifacts
 poc/poc-config.json
 
+# Wails build artifacts (main app)
+/build/bin/
+/frontend/dist/
+/frontend/node_modules/
+/frontend/wailsjs/
+
+# Main app runtime artifacts
+/compositor.db
+/compositor.db-shm
+/compositor.db-wal
+/.lock
+/logs/
+/bms-random-table-compositor
+
 # OS / Editor
 .DS_Store
 *.swp
 .idea/
 .vscode/
+
+# Temp
+tmp/
