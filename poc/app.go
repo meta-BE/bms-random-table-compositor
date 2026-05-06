@@ -25,7 +25,7 @@ func (a *App) startup(ctx context.Context) {
 
 // shutdown は Wails の OnShutdown で呼ばれる。サーバを停止する。
 func (a *App) shutdown(ctx context.Context) {
-	c, cancel := context.WithTimeout(ctx, 5*time.Second)
+	c, cancel := context.WithTimeout(ctx, 1*time.Second)
 	defer cancel()
 	_ = a.server.Stop(c)
 }
@@ -50,6 +50,7 @@ func (a *App) GetStatus() Status {
 
 // SaveAndStart は新しいポートを保存し、現在のサーバを停止してから新ポートで再起動する。
 // エラー（保存失敗 or ポート確保失敗）はそのままフロントに返す。
+// Stop がタイムアウトした場合は Close で強制終了済みのため、エラーを無視して Start に進む。
 func (a *App) SaveAndStart(port int) error {
 	if port < 1 || port > 65535 {
 		return errPortRange{}
@@ -57,17 +58,15 @@ func (a *App) SaveAndStart(port int) error {
 	if err := SaveConfig(Config{Port: port}); err != nil {
 		return err
 	}
-	c, cancel := context.WithTimeout(a.ctx, 5*time.Second)
+	c, cancel := context.WithTimeout(a.ctx, 1*time.Second)
 	defer cancel()
-	if err := a.server.Stop(c); err != nil {
-		return err
-	}
+	_ = a.server.Stop(c)
 	return a.server.Start(port)
 }
 
 // Stop はサーバを停止する。
 func (a *App) Stop() error {
-	c, cancel := context.WithTimeout(a.ctx, 5*time.Second)
+	c, cancel := context.WithTimeout(a.ctx, 1*time.Second)
 	defer cancel()
 	return a.server.Stop(c)
 }

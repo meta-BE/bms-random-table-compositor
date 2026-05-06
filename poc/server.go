@@ -50,6 +50,7 @@ func (s *Server) Start(port int) error {
 	s.server = &http.Server{
 		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
+		IdleTimeout:       2 * time.Second,
 	}
 	s.port = port
 
@@ -60,17 +61,24 @@ func (s *Server) Start(port int) error {
 }
 
 // Stop はサーバをグレースフル停止する。未起動なら何もしない。
+// ctxタイムアウト時は強制クローズにフォールバックする。
 func (s *Server) Stop(ctx context.Context) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	if s.server == nil {
+		s.mu.Unlock()
 		return nil
 	}
 	srv := s.server
 	s.server = nil
 	s.port = 0
-	return srv.Shutdown(ctx)
+	s.mu.Unlock()
+
+	if err := srv.Shutdown(ctx); err != nil {
+		// ctx タイムアウト等で graceful shutdown が間に合わない場合は強制終了
+		_ = srv.Close()
+		return err
+	}
+	return nil
 }
 
 // Running は現在サーバが起動中かを返す。
