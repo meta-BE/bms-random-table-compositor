@@ -36,6 +36,12 @@ jobs:
         shell: pwsh
         run: wails build -platform windows/amd64
 
+      # Wails は Windows ビルド時に exe 名としてプロジェクトディレクトリ名 (poc) を使うため、
+      # 配布名 bms-rtc-poc.exe にリネームしてから artifact 化する
+      - name: Rename exe
+        shell: pwsh
+        run: Rename-Item -Path build/bin/poc.exe -NewName bms-rtc-poc.exe
+
       - name: Upload exe artifact
         uses: actions/upload-artifact@v4
         with:
