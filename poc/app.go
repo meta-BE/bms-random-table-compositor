@@ -2,26 +2,74 @@ package main
 
 import (
 	"context"
-	"fmt"
+	"time"
 )
 
-// App struct
+// App は Wails のメインアプリオブジェクト。フロントエンドからBind経由で呼ばれる。
 type App struct {
-	ctx context.Context
+	ctx    context.Context
+	server *Server
 }
 
-// NewApp creates a new App application struct
+// NewApp は新しい App インスタンスを作る。
 func NewApp() *App {
-	return &App{}
+	return &App{server: NewServer()}
 }
 
-// startup is called when the app starts. The context is saved
-// so we can call the runtime methods
+// startup は Wails の OnStartup で呼ばれる。
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 }
 
-// Greet returns a greeting for the given name
-func (a *App) Greet(name string) string {
-	return fmt.Sprintf("Hello %s, It's show time!", name)
+// shutdown は Wails の OnShutdown で呼ばれる。サーバを停止する。
+func (a *App) shutdown(ctx context.Context) {
+	c, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	_ = a.server.Stop(c)
 }
+
+// === フロントエンドにBindされるメソッド ===
+
+// GetConfig は現在の設定を返す。
+func (a *App) GetConfig() (Config, error) {
+	return LoadConfig()
+}
+
+// Status は現在のサーバ状態を返す。
+type Status struct {
+	Running bool `json:"running"`
+	Port    int  `json:"port"`
+}
+
+func (a *App) GetStatus() Status {
+	running, port := a.server.Running()
+	return Status{Running: running, Port: port}
+}
+
+// SaveAndStart は新しいポートを保存し、現在のサーバを停止してから新ポートで再起動する。
+// エラー（保存失敗 or ポート確保失敗）はそのままフロントに返す。
+func (a *App) SaveAndStart(port int) error {
+	if port < 1 || port > 65535 {
+		return errPortRange{}
+	}
+	if err := SaveConfig(Config{Port: port}); err != nil {
+		return err
+	}
+	c, cancel := context.WithTimeout(a.ctx, 5*time.Second)
+	defer cancel()
+	if err := a.server.Stop(c); err != nil {
+		return err
+	}
+	return a.server.Start(port)
+}
+
+// Stop はサーバを停止する。
+func (a *App) Stop() error {
+	c, cancel := context.WithTimeout(a.ctx, 5*time.Second)
+	defer cancel()
+	return a.server.Stop(c)
+}
+
+type errPortRange struct{}
+
+func (errPortRange) Error() string { return "ポート番号は 1〜65535 の範囲で指定してください" }
