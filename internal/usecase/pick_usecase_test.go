@@ -5,7 +5,6 @@ import (
 	"errors"
 	"io"
 	"log/slog"
-	"sort"
 	"testing"
 	"time"
 
@@ -259,6 +258,7 @@ func TestPickUseCase_LevelOrderRespected(t *testing.T) {
 
 func TestPickUseCase_LevelOrder_FallbackWhenSourceHasNone(t *testing.T) {
 	f := newPickUCFixture(t)
+	// 数値レベルのみ → 文字列ソートでは ["1","10","2"] になるが、自然順では数値昇順 ["1","2","10"]
 	f.seedSource(t, "SRC1", nil, domain.FetchStatusOK, []domain.SourceChart{
 		chartFixture("SRC1", "10", 0, "x"),
 		chartFixture("SRC1", "1", 1, "y"),
@@ -268,10 +268,24 @@ func TestPickUseCase_LevelOrder_FallbackWhenSourceHasNone(t *testing.T) {
 
 	r, _, err := f.uc.PickBySlug(context.Background(), "p1")
 	require.NoError(t, err)
-	got := append([]string(nil), r.LevelOrder...)
-	sortedCopy := append([]string(nil), got...)
-	sort.Strings(sortedCopy)
-	require.Equal(t, sortedCopy, got)
+	require.Equal(t, []string{"1", "2", "10"}, r.LevelOrder)
+}
+
+// 数値解釈できないレベル（"段位1" 等）を含む場合、数値が先で文字列が末尾になる。
+func TestPickUseCase_LevelOrder_FallbackMixedNumericAndString(t *testing.T) {
+	f := newPickUCFixture(t)
+	f.seedSource(t, "SRC1", nil, domain.FetchStatusOK, []domain.SourceChart{
+		chartFixture("SRC1", "段位2", 0, "a"),
+		chartFixture("SRC1", "10", 1, "b"),
+		chartFixture("SRC1", "段位1", 2, "c"),
+		chartFixture("SRC1", "2", 3, "d"),
+	})
+	f.seedPub(t, "PUB1", "p1", "SRC1", false, 0, domain.RefreshModePerRequest)
+
+	r, _, err := f.uc.PickBySlug(context.Background(), "p1")
+	require.NoError(t, err)
+	// 数値レベルが昇順で先、文字列レベルが昇順で末尾
+	require.Equal(t, []string{"2", "10", "段位1", "段位2"}, r.LevelOrder)
 }
 
 func TestPickUseCase_DeterministicWithSameSeed(t *testing.T) {

@@ -153,13 +153,14 @@ func (u *PickUseCase) regenerate(ctx context.Context, pub domain.PublishedTable)
 	}
 
 	// レベル順序の決定: ソース表 level_order があればそれに従い、無ければ自然順
+	// （数値解釈できるものを数値昇順で先に、解釈不能なものは文字列昇順で末尾に）
 	order := src.LevelOrder
 	if len(order) == 0 {
 		order = make([]string, 0, len(byLevel))
 		for k := range byLevel {
 			order = append(order, k)
 		}
-		sort.Strings(order)
+		sortLevelsNatural(order)
 	}
 
 	// 最終 Charts と level_order（残ったレベルのみ）を組み立て
@@ -186,7 +187,7 @@ func (u *PickUseCase) regenerate(ctx context.Context, pub domain.PublishedTable)
 				extra = append(extra, k)
 			}
 		}
-		sort.Strings(extra)
+		sortLevelsNatural(extra)
 		for _, l := range extra {
 			finalCharts = append(finalCharts, byLevel[l]...)
 			finalLevelOrder = append(finalLevelOrder, l)
@@ -230,4 +231,35 @@ func fnv32(s string) uint32 {
 	h := fnv.New32a()
 	_, _ = h.Write([]byte(s))
 	return h.Sum32()
+}
+
+// sortLevelsNatural は BMS 難易度表のレベル列を自然順に並べる。
+// 数値として解釈できるレベル（"0", "12", "1.5" 等）を数値昇順で先に置き、
+// 解釈不能な文字列（"段位1", "?" 等）を文字列昇順で末尾に置く。
+// 同じ数値（"1" と "1.0" 等）は文字列で安定整列。
+// bms-elsa の `ORDER BY CAST(level AS INTEGER) = 0 AND level != '0', CAST(level AS INTEGER), level`
+// と同じ意図で、SQLite CAST AS INTEGER の代わりに float64 解釈を使う。
+func sortLevelsNatural(levels []string) {
+	sort.SliceStable(levels, func(i, j int) bool {
+		ai, aok := parseLevelNumeric(levels[i])
+		bj, bok := parseLevelNumeric(levels[j])
+		if aok != bok {
+			return aok // 数値解釈できる方が先
+		}
+		if aok {
+			if ai != bj {
+				return ai < bj
+			}
+		}
+		return levels[i] < levels[j]
+	})
+}
+
+// parseLevelNumeric は level 文字列を float64 として解釈する。失敗時は (0, false)。
+func parseLevelNumeric(s string) (float64, bool) {
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return 0, false
+	}
+	return f, true
 }
