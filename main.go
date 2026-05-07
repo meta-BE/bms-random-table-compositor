@@ -50,6 +50,7 @@ func main() {
 		Bind: []any{
 			myApp,
 			services.ConfigHandler,
+			services.SourceTableHandler,
 		},
 	}); err != nil {
 		services.Logger.Error("wails run failed", "err", err)

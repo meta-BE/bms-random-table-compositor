@@ -5,7 +5,11 @@ import (
 	"database/sql"
 	"fmt"
 	"log/slog"
+	"net/http"
+	"time"
 
+	"github.com/meta-BE/bms-random-table-compositor/internal/adapter/gateway"
+	"github.com/meta-BE/bms-random-table-compositor/internal/adapter/idgen"
 	"github.com/meta-BE/bms-random-table-compositor/internal/adapter/logger"
 	"github.com/meta-BE/bms-random-table-compositor/internal/adapter/paths"
 	"github.com/meta-BE/bms-random-table-compositor/internal/adapter/persistence"
@@ -15,13 +19,15 @@ import (
 
 // Services はアプリ全体で共有する依存を保持する。
 type Services struct {
-	DB            *sql.DB
-	Logger        *slog.Logger
-	LoggerClose   logger.CloseFunc
-	ConfigHandler *handler.ConfigHandler
+	DB                 *sql.DB
+	Logger             *slog.Logger
+	LoggerClose        logger.CloseFunc
+	ConfigHandler      *handler.ConfigHandler
+	SourceTableHandler *handler.SourceTableHandler
+	SourceTableUseCase *usecase.SourceTableUseCase
 }
 
-// Bootstrap は Services を構築する（DB接続・マイグレーション・ロガー初期化）。
+// Bootstrap は Services を構築する（DB接続・マイグレーション・ロガー・各UseCase初期化）。
 // シングルインスタンス制御は Wails の SingleInstanceLock オプションに任せる。
 func Bootstrap() (*Services, error) {
 	// 1. Logger
@@ -56,18 +62,27 @@ func Bootstrap() (*Services, error) {
 		return nil, fmt.Errorf("migrations: %w", err)
 	}
 
-	// 3. ハンドラ配線
+	// 3. UseCase / Handler 配線
 	configStore := persistence.NewConfigStoreSQL(db)
 	configUC := usecase.NewConfigUseCase(configStore)
 	configHandler := handler.NewConfigHandler(configUC)
 
+	sourceRepo := persistence.NewSourceTableRepoSQL(db)
+	httpClient := &http.Client{Timeout: 30 * time.Second}
+	fetcher := gateway.NewBMSTableFetcher(httpClient, lg)
+	idGen := idgen.NewULID()
+	sourceUC := usecase.NewSourceTableUseCase(sourceRepo, fetcher, idGen, lg)
+	sourceHandler := handler.NewSourceTableHandler(sourceUC)
+
 	lg.Info("bootstrap complete", "db", dbPath, "logDir", logDir)
 
 	return &Services{
-		DB:            db,
-		Logger:        lg,
-		LoggerClose:   closeLog,
-		ConfigHandler: configHandler,
+		DB:                 db,
+		Logger:             lg,
+		LoggerClose:        closeLog,
+		ConfigHandler:      configHandler,
+		SourceTableHandler: sourceHandler,
+		SourceTableUseCase: sourceUC,
 	}, nil
 }
 
