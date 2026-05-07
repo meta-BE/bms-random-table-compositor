@@ -42,4 +42,3 @@ func TestLogDir_IsExecutableDirLogs(t *testing.T) {
 		t.Errorf("LogDir() = %q, want %q", got, want)
 	}
 }
-

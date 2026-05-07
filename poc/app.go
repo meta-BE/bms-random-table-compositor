@@ -79,4 +79,6 @@ func (a *App) OpenURL(url string) {
 
 type errPortRange struct{}
 
-func (errPortRange) Error() string { return "ポート番号は 1〜65535 の範囲で指定してください" }
+func (errPortRange) Error() string {
+	return "ポート番号は 1〜65535 の範囲で指定してください"
+}

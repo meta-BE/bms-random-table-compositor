@@ -280,8 +280,8 @@ func TestPublishedTableUseCase_ValidateSlug(t *testing.T) {
 
 func TestPublishedTableUseCase_SuggestSlugFromSource(t *testing.T) {
 	src := newFakeSourceRepo()
-	seedSource(t, src, "01JSRC00000000000000011", "Satellite", "")        // Name のみ
-	seedSource(t, src, "01JSRC00000000000000012", "X", "発狂難易度表") // DisplayName 優先 → 全部マルチバイトなのでフォールバック
+	seedSource(t, src, "01JSRC00000000000000011", "Satellite", "") // Name のみ
+	seedSource(t, src, "01JSRC00000000000000012", "X", "発狂難易度表")   // DisplayName 優先 → 全部マルチバイトなのでフォールバック
 	seedSource(t, src, "01JSRC00000000000000013", "Stellar Mix β", "")
 	uc, _ := newPublishedUC(t, src)
 
