@@ -139,7 +139,7 @@
 
   <div class="add-form">
     <label class="row">
-      <span class="label">URL（HTML / header.json はパス末尾の拡張子で自動判別）</span>
+      <span class="label">URL（HTML / header.json）</span>
       <input type="text" bind:value={newUrl} placeholder="https://example.com/table.html" />
     </label>
     <div class="actions">
