@@ -4,7 +4,7 @@ package tray
 import (
 	"sync"
 
-	"github.com/getlantern/systray"
+	"fyne.io/systray"
 )
 
 // State はトレイアイコン色の切替対象となる状態。

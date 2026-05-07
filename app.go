@@ -2,26 +2,60 @@ package main
 
 import (
 	"context"
-	"fmt"
+
+	"github.com/meta-BE/bms-random-table-compositor/internal/adapter/tray"
+	"github.com/meta-BE/bms-random-table-compositor/internal/app"
+	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
-// App struct
+// App は Wails のメインアプリオブジェクト。
 type App struct {
-	ctx context.Context
+	ctx      context.Context
+	services *app.Services
+	tray     *tray.Tray
 }
 
-// NewApp creates a new App application struct
-func NewApp() *App {
-	return &App{}
+// NewApp は services を保持した App を作る。
+// services は Bootstrap で構築済みのものを渡す。
+func NewApp(services *app.Services) *App {
+	return &App{services: services}
 }
 
-// startup is called when the app starts. The context is saved
-// so we can call the runtime methods
+// startup は OnStartup で呼ばれる。ctx 保持と ConfigHandler への ctx 配布。
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
+	a.services.ConfigHandler.SetContext(ctx)
+	a.services.Logger.Info("wails startup")
 }
 
-// Greet returns a greeting for the given name
-func (a *App) Greet(name string) string {
-	return fmt.Sprintf("Hello %s, It's show time!", name)
+// onBeforeClose はウィンドウクローズ前に呼ばれる。
+// true を返すとクローズが取り消される。本実装ではトレイ格納のため
+// 自前で WindowHide してから true を返す。
+func (a *App) onBeforeClose(ctx context.Context) bool {
+	wailsruntime.WindowHide(ctx)
+	return true
+}
+
+// shutdown はアプリ完全終了時に呼ばれる。
+func (a *App) shutdown(ctx context.Context) {
+	a.services.Logger.Info("wails shutdown")
+}
+
+// SetTray はトレイインスタンスを保持する（main から渡される）。
+func (a *App) SetTray(t *tray.Tray) {
+	a.tray = t
+}
+
+// ShowWindow はトレイメニューから呼ばれ、ウィンドウを再表示する。
+func (a *App) ShowWindow() {
+	if a.ctx != nil {
+		wailsruntime.WindowShow(a.ctx)
+	}
+}
+
+// Quit はトレイメニュー「終了」から呼ばれる。Wails ウィンドウを終了させる。
+func (a *App) Quit() {
+	if a.ctx != nil {
+		wailsruntime.Quit(a.ctx)
+	}
 }
