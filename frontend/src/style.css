@@ -1,11 +1,8 @@
-*, *::before, *::after {
-    box-sizing: border-box;
-}
-
-body {
-    margin: 0;
+@import "tailwindcss";
+@plugin "daisyui" {
+  themes: emerald --default;
 }
 
 #app {
-    height: 100vh;
+  height: 100vh;
 }
