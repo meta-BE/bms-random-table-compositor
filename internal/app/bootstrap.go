@@ -9,7 +9,6 @@ import (
 	"github.com/meta-BE/bms-random-table-compositor/internal/adapter/logger"
 	"github.com/meta-BE/bms-random-table-compositor/internal/adapter/paths"
 	"github.com/meta-BE/bms-random-table-compositor/internal/adapter/persistence"
-	"github.com/meta-BE/bms-random-table-compositor/internal/adapter/singleinstance"
 	"github.com/meta-BE/bms-random-table-compositor/internal/app/handler"
 	"github.com/meta-BE/bms-random-table-compositor/internal/usecase"
 )
@@ -19,14 +18,13 @@ type Services struct {
 	DB            *sql.DB
 	Logger        *slog.Logger
 	LoggerClose   logger.CloseFunc
-	Lock          singleinstance.Lock
 	ConfigHandler *handler.ConfigHandler
 }
 
-// Bootstrap は Services を構築する（DB接続・マイグレーション・ロック取得・ロガー初期化）。
-// 失敗時は途中で取得済みのリソースを開放してエラーを返す。
+// Bootstrap は Services を構築する（DB接続・マイグレーション・ロガー初期化）。
+// シングルインスタンス制御は Wails の SingleInstanceLock オプションに任せる。
 func Bootstrap() (*Services, error) {
-	// 1. ログディレクトリとロガー
+	// 1. Logger
 	logDir, err := paths.LogDir()
 	if err != nil {
 		return nil, fmt.Errorf("log dir: %w", err)
@@ -41,39 +39,24 @@ func Bootstrap() (*Services, error) {
 		return nil, fmt.Errorf("logger init: %w", err)
 	}
 
-	// 2. シングルインスタンスロック
-	lockPath, err := paths.LockPath()
-	if err != nil {
-		_ = closeLog()
-		return nil, fmt.Errorf("lock path: %w", err)
-	}
-	lock, err := singleinstance.Acquire(lockPath)
-	if err != nil {
-		_ = closeLog()
-		return nil, err // ErrAlreadyRunning も含む
-	}
-
-	// 3. DB と マイグレーション
+	// 2. DB と マイグレーション
 	dbPath, err := paths.DBPath()
 	if err != nil {
-		_ = lock.Release()
 		_ = closeLog()
 		return nil, fmt.Errorf("db path: %w", err)
 	}
 	db, err := persistence.OpenDB(dbPath)
 	if err != nil {
-		_ = lock.Release()
 		_ = closeLog()
 		return nil, fmt.Errorf("db open: %w", err)
 	}
 	if err := persistence.RunMigrations(db); err != nil {
 		_ = db.Close()
-		_ = lock.Release()
 		_ = closeLog()
 		return nil, fmt.Errorf("migrations: %w", err)
 	}
 
-	// 4. ハンドラ配線
+	// 3. ハンドラ配線
 	configStore := persistence.NewConfigStoreSQL(db)
 	configUC := usecase.NewConfigUseCase(configStore)
 	configHandler := handler.NewConfigHandler(configUC)
@@ -84,7 +67,6 @@ func Bootstrap() (*Services, error) {
 		DB:            db,
 		Logger:        lg,
 		LoggerClose:   closeLog,
-		Lock:          lock,
 		ConfigHandler: configHandler,
 	}, nil
 }
@@ -93,9 +75,6 @@ func Bootstrap() (*Services, error) {
 func (s *Services) Close() {
 	if s.DB != nil {
 		_ = s.DB.Close()
-	}
-	if s.Lock != nil {
-		_ = s.Lock.Release()
 	}
 	if s.LoggerClose != nil {
 		_ = s.LoggerClose()

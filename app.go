@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"os"
 
 	"github.com/meta-BE/bms-random-table-compositor/internal/adapter/tray"
 	"github.com/meta-BE/bms-random-table-compositor/internal/app"
+	"github.com/wailsapp/wails/v2/pkg/options"
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
@@ -16,12 +18,11 @@ type App struct {
 }
 
 // NewApp は services を保持した App を作る。
-// services は Bootstrap で構築済みのものを渡す。
 func NewApp(services *app.Services) *App {
 	return &App{services: services}
 }
 
-// startup は OnStartup で呼ばれる。ctx 保持と ConfigHandler への ctx 配布。
+// startup は OnStartup で呼ばれる。
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 	a.services.ConfigHandler.SetContext(ctx)
@@ -43,21 +44,33 @@ func (a *App) shutdown(ctx context.Context) {
 	a.services.Logger.Info("wails shutdown")
 }
 
-// SetTray はトレイインスタンスを保持する（main から渡される）。
+// onSecondInstance は二重起動を検知した時に Wails から呼ばれる。
+// 既存インスタンスのウィンドウを前面化する。
+func (a *App) onSecondInstance(_ options.SecondInstanceData) {
+	if a.ctx != nil {
+		wailsruntime.WindowShow(a.ctx)
+		wailsruntime.Show(a.ctx)
+	}
+}
+
+// SetTray はトレイインスタンスを保持する。
 func (a *App) SetTray(t *tray.Tray) {
 	a.tray = t
 }
 
-// ShowWindow はトレイメニューから呼ばれ、ウィンドウを再表示する。
+// ShowWindow はトレイメニュー「設定を開く」から呼ばれ、ウィンドウを再表示する。
 func (a *App) ShowWindow() {
 	if a.ctx != nil {
 		wailsruntime.WindowShow(a.ctx)
 	}
 }
 
-// Quit はトレイメニュー「終了」から呼ばれる。Wails ウィンドウを終了させる。
+// Quit はトレイメニュー「終了」から呼ばれる。
+// wailsruntime.Quit はトレイ goroutine から呼ぶと Windows で正常に効かないことがあるため、
+// services.Close() でリソース解放してから os.Exit で確実にプロセス終了させる。
 func (a *App) Quit() {
-	if a.ctx != nil {
-		wailsruntime.Quit(a.ctx)
+	if a.services != nil {
+		a.services.Close()
 	}
+	os.Exit(0)
 }

@@ -43,14 +43,3 @@ func TestLogDir_IsExecutableDirLogs(t *testing.T) {
 	}
 }
 
-func TestLockPath_IsExecutableDirDotLock(t *testing.T) {
-	exe, _ := ExecutableDir()
-	got, err := LockPath()
-	if err != nil {
-		t.Fatalf("LockPath returned error: %v", err)
-	}
-	want := filepath.Join(exe, ".lock")
-	if got != want {
-		t.Errorf("LockPath() = %q, want %q", got, want)
-	}
-}
