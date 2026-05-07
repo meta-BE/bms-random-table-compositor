@@ -12,6 +12,8 @@ import (
 	"net/url"
 	"strconv"
 
+	"golang.org/x/net/html"
+
 	"github.com/meta-BE/bms-random-table-compositor/internal/domain"
 	"github.com/meta-BE/bms-random-table-compositor/internal/port"
 )
@@ -74,12 +76,31 @@ func (f *BMSTableFetcher) FetchByHeader(
 	return port.FetchedTable{Header: header, Charts: charts, ETag: newETag}, nil
 }
 
-// FetchByHTML は次タスクで実装する（プレースホルダではなく未定義のままにし、
-// 呼ばれたら明示エラーを返す）。
+// FetchByHTML は HTML を取得し <meta name="bmstable" content="..."> から
+// header.json の URL を抽出して FetchByHeader に委譲する。
 func (f *BMSTableFetcher) FetchByHTML(
 	ctx context.Context, htmlURL string, etag string,
 ) (port.FetchedTable, error) {
-	return port.FetchedTable{}, errors.New("FetchByHTML は未実装（Plan 2 / Task 9 で実装）")
+	body, _, err := f.httpGet(ctx, htmlURL, "")
+	if err != nil {
+		return port.FetchedTable{}, fmt.Errorf("get html: %w", err)
+	}
+	defer body.Close()
+
+	headerHref, err := extractBMSTableMeta(body)
+	if err != nil {
+		return port.FetchedTable{}, err
+	}
+
+	htmlBase, err := url.Parse(htmlURL)
+	if err != nil {
+		return port.FetchedTable{}, fmt.Errorf("parse htmlURL %q: %w", htmlURL, err)
+	}
+	headerURL, err := resolveURL(htmlBase, headerHref)
+	if err != nil {
+		return port.FetchedTable{}, err
+	}
+	return f.FetchByHeader(ctx, headerURL, etag)
 }
 
 // ---- 内部ヘルパ ----
@@ -147,6 +168,49 @@ func resolveURL(base *url.URL, ref string) (string, error) {
 		return "", fmt.Errorf("parse ref %q: %w", ref, err)
 	}
 	return base.ResolveReference(refURL).String(), nil
+}
+
+// extractBMSTableMeta は HTML ストリームから最初の <meta name="bmstable">
+// タグを探し、その content 属性値を返す。
+func extractBMSTableMeta(r io.Reader) (string, error) {
+	z := html.NewTokenizer(r)
+	for {
+		tt := z.Next()
+		if tt == html.ErrorToken {
+			if errors.Is(z.Err(), io.EOF) {
+				return "", errors.New(`<meta name="bmstable"> が HTML 内に見つかりません`)
+			}
+			return "", z.Err()
+		}
+		if tt != html.StartTagToken && tt != html.SelfClosingTagToken {
+			continue
+		}
+		name, hasAttr := z.TagName()
+		if string(name) != "meta" || !hasAttr {
+			continue
+		}
+		var (
+			isBMSTable bool
+			content    string
+		)
+		for {
+			attrName, attrValue, more := z.TagAttr()
+			switch string(attrName) {
+			case "name":
+				if string(attrValue) == "bmstable" {
+					isBMSTable = true
+				}
+			case "content":
+				content = string(attrValue)
+			}
+			if !more {
+				break
+			}
+		}
+		if isBMSTable && content != "" {
+			return content, nil
+		}
+	}
 }
 
 // chartFromRaw は data.json の 1 エントリを SourceChart に変換する。

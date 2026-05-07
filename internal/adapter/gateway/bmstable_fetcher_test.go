@@ -143,3 +143,71 @@ func TestBMSTableFetcher_FetchByHeader_DataChartMissingMD5IsError(t *testing.T) 
 	_, err := f.FetchByHeader(context.Background(), ts.URL+"/header.json", "")
 	require.Error(t, err)
 }
+
+func TestBMSTableFetcher_FetchByHTML_ResolvesRelativeMeta(t *testing.T) {
+	htmlBody := loadFixture(t, "source_table_fixture.html")
+	headerJSON := loadFixture(t, "source_table_fixture_header.json")
+	dataJSON := loadFixture(t, "source_table_fixture_data.json")
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/table.html":
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = w.Write(htmlBody)
+		case "/source_table_fixture_header.json":
+			_, _ = w.Write(headerJSON)
+		case "/source_table_fixture_data.json":
+			w.Header().Set("ETag", `"etag-html"`)
+			_, _ = w.Write(dataJSON)
+		}
+	}))
+	defer ts.Close()
+
+	f := gateway.NewBMSTableFetcher(http.DefaultClient, newSilentLogger())
+	ft, err := f.FetchByHTML(context.Background(), ts.URL+"/table.html", "")
+	require.NoError(t, err)
+	require.False(t, ft.NotModified)
+	require.Equal(t, "Fixture Table", ft.Header.Name)
+	require.Len(t, ft.Charts, 3)
+	require.Equal(t, `"etag-html"`, ft.ETag)
+}
+
+func TestBMSTableFetcher_FetchByHTML_AbsoluteMetaURL(t *testing.T) {
+	// header.json を別オリジンに置いて、HTML 内 meta が絶対 URL のケース
+	headerHost := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/header.json":
+			_, _ = w.Write([]byte(`{"name":"Abs","symbol":"a","data_url":"data.json"}`))
+		case "/data.json":
+			_, _ = w.Write([]byte(`[{"md5":"deadbeef","level":"0"}]`))
+		}
+	}))
+	defer headerHost.Close()
+
+	htmlHost := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		htmlBody := []byte(`<!doctype html><html><head>` +
+			`<meta name="bmstable" content="` + headerHost.URL + `/header.json">` +
+			`</head><body></body></html>`)
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write(htmlBody)
+	}))
+	defer htmlHost.Close()
+
+	f := gateway.NewBMSTableFetcher(http.DefaultClient, newSilentLogger())
+	ft, err := f.FetchByHTML(context.Background(), htmlHost.URL+"/", "")
+	require.NoError(t, err)
+	require.Equal(t, "Abs", ft.Header.Name)
+	require.Len(t, ft.Charts, 1)
+	require.Equal(t, "deadbeef", ft.Charts[0].MD5)
+}
+
+func TestBMSTableFetcher_FetchByHTML_NoMetaTagIsError(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`<html><head></head><body>no meta</body></html>`))
+	}))
+	defer ts.Close()
+	f := gateway.NewBMSTableFetcher(http.DefaultClient, newSilentLogger())
+	_, err := f.FetchByHTML(context.Background(), ts.URL+"/", "")
+	require.Error(t, err)
+	require.True(t, strings.Contains(err.Error(), "bmstable"))
+}
