@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/meta-BE/bms-random-table-compositor/internal/domain"
+	"github.com/meta-BE/bms-random-table-compositor/internal/port"
 )
 
 // SourceTableRepoSQL は source_table / source_table_chart を扱う port.SourceTableRepo の実装。
@@ -176,4 +177,100 @@ func fetchedAtToNullable(t *time.Time) any {
 		return nil
 	}
 	return t.UTC().Format(time.RFC3339)
+}
+
+// SaveFetched は取得結果を Tx 内で保存する。
+// NotModified=true の場合は last_fetched_at / updated_at のみ更新し、譜面行は触らない。
+func (r *SourceTableRepoSQL) SaveFetched(
+	ctx context.Context, sourceID string, ft port.FetchedTable, fetchedAt time.Time,
+) error {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	fetchedAtStr := fetchedAt.UTC().Format(time.RFC3339)
+
+	if ft.NotModified {
+		_, err = tx.ExecContext(ctx,
+			`UPDATE source_table SET
+			   last_fetched_at=?, last_fetch_status='ok', last_fetch_error='',
+			   updated_at=datetime('now')
+			 WHERE id=?`,
+			fetchedAtStr, sourceID,
+		)
+		if err != nil {
+			return fmt.Errorf("update source_table (not_modified) %q: %w", sourceID, err)
+		}
+		return tx.Commit()
+	}
+
+	levelOrderJSON, err := json.Marshal(ft.Header.LevelOrder)
+	if err != nil {
+		return fmt.Errorf("marshal level_order: %w", err)
+	}
+	if string(levelOrderJSON) == "null" {
+		levelOrderJSON = []byte("[]")
+	}
+
+	_, err = tx.ExecContext(ctx,
+		`UPDATE source_table SET
+		   name=?, symbol=?, level_order_json=?, data_url=?, etag=?,
+		   last_fetched_at=?, last_fetch_status='ok', last_fetch_error='',
+		   updated_at=datetime('now')
+		 WHERE id=?`,
+		ft.Header.Name, ft.Header.Symbol, string(levelOrderJSON),
+		ft.Header.DataURL, ft.ETag, fetchedAtStr, sourceID,
+	)
+	if err != nil {
+		return fmt.Errorf("update source_table %q: %w", sourceID, err)
+	}
+
+	if _, err = tx.ExecContext(ctx, `DELETE FROM source_table_chart WHERE source_id=?`, sourceID); err != nil {
+		return fmt.Errorf("delete charts %q: %w", sourceID, err)
+	}
+
+	stmt, err := tx.PrepareContext(ctx,
+		`INSERT INTO source_table_chart
+		 (source_id, position, md5, sha256, level, title, artist, raw_json)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+	if err != nil {
+		return fmt.Errorf("prepare insert chart: %w", err)
+	}
+	defer stmt.Close()
+
+	for _, c := range ft.Charts {
+		rawJSON, err := json.Marshal(c.Raw)
+		if err != nil {
+			return fmt.Errorf("marshal raw[pos=%d]: %w", c.Position, err)
+		}
+		if _, err := stmt.ExecContext(ctx,
+			sourceID, c.Position, c.MD5, c.SHA256, c.Level, c.Title, c.Artist, string(rawJSON),
+		); err != nil {
+			return fmt.Errorf("insert chart[pos=%d]: %w", c.Position, err)
+		}
+	}
+	return tx.Commit()
+}
+
+// MarkFetchError は取得失敗を記録する。譜面行は触らない（前回成功時のキャッシュを保持）。
+func (r *SourceTableRepoSQL) MarkFetchError(
+	ctx context.Context, sourceID string, fetchErr error, fetchedAt time.Time,
+) error {
+	msg := ""
+	if fetchErr != nil {
+		msg = fetchErr.Error()
+	}
+	_, err := r.db.ExecContext(ctx,
+		`UPDATE source_table SET
+		   last_fetched_at=?, last_fetch_status='error', last_fetch_error=?,
+		   updated_at=datetime('now')
+		 WHERE id=?`,
+		fetchedAt.UTC().Format(time.RFC3339), msg, sourceID,
+	)
+	if err != nil {
+		return fmt.Errorf("mark fetch error %q: %w", sourceID, err)
+	}
+	return nil
 }
