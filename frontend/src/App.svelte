@@ -1,8 +1,9 @@
 <script lang="ts">
   import ServerTab from './lib/tabs/ServerTab.svelte';
   import SourceTablesTab from './lib/tabs/SourceTablesTab.svelte';
+  import PublishedTablesTab from './lib/tabs/PublishedTablesTab.svelte';
 
-  type TabKey = 'server' | 'source-tables';
+  type TabKey = 'server' | 'source-tables' | 'published-tables';
   let active: TabKey = 'server';
 </script>
 
@@ -12,12 +13,15 @@
     <nav>
       <button class:active={active === 'server'} on:click={() => (active = 'server')}>サーバ設定</button>
       <button class:active={active === 'source-tables'} on:click={() => (active = 'source-tables')}>ソース表</button>
+      <button class:active={active === 'published-tables'} on:click={() => (active = 'published-tables')}>公開表</button>
     </nav>
   </header>
   {#if active === 'server'}
     <ServerTab />
   {:else if active === 'source-tables'}
     <SourceTablesTab />
+  {:else if active === 'published-tables'}
+    <PublishedTablesTab />
   {/if}
 </main>
 
