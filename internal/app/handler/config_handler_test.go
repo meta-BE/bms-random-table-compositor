@@ -54,3 +54,13 @@ func TestConfigHandler_SetSongdataDBPath_Persists(t *testing.T) {
 	cfg, _ := h.GetServerConfig()
 	require.Equal(t, "/tmp/songdata.db", cfg.SongdataDBPath)
 }
+
+func TestConfigHandler_PickSongdataDB_NoContext(t *testing.T) {
+	t.Parallel()
+	uc := usecase.NewConfigUseCase(&fakeStore{data: map[string]string{}})
+	h := handler.NewConfigHandler(uc)
+	// SetContext 前は ctx が context.Background() 固定。runtime API は呼ばない契約とする。
+	got, err := h.PickSongdataDB()
+	require.NoError(t, err)
+	require.Equal(t, "", got)
+}

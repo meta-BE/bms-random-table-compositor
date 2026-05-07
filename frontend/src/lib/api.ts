@@ -3,6 +3,7 @@ import {
   GetServerConfig,
   SetServerPort,
   SetSongdataDBPath,
+  PickSongdataDB,
 } from '../../wailsjs/go/handler/ConfigHandler';
 import {
   ListSourceTables,
@@ -115,6 +116,9 @@ export const api = {
   },
   setSongdataDBPath(path: string): Promise<void> {
     return SetSongdataDBPath(path);
+  },
+  pickSongdataDB(): Promise<string> {
+    return PickSongdataDB() as Promise<string>;
   },
   // ---- ソース表 ----
   listSourceTables(): Promise<SourceTableDTO[]> {
