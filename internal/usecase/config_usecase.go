@@ -16,13 +16,22 @@ const (
 )
 
 // ConfigUseCase は config の Get/Set を型安全にラップする。
+// SetSongdataDBPath が呼ばれたとき、登録されたフックを順に呼ぶ
+// （所持キャッシュ invalidate / ピック結果 clear など）。
 type ConfigUseCase struct {
-	store port.ConfigStore
+	store         port.ConfigStore
+	songdataHooks []func()
 }
 
 // NewConfigUseCase は新しい ConfigUseCase を作る。
 func NewConfigUseCase(store port.ConfigStore) *ConfigUseCase {
 	return &ConfigUseCase{store: store}
+}
+
+// AddSongdataPathChangeHook は songdata_db_path 変更時に呼ばれるフックを追加する。
+// Bootstrap で OwnedMD5Cache.Invalidate と PickResultStore.Clear を登録する想定。
+func (u *ConfigUseCase) AddSongdataPathChangeHook(fn func()) {
+	u.songdataHooks = append(u.songdataHooks, fn)
 }
 
 // GetServerPort は HTTP サーバのポート番号を返す。未設定時は defaultServerPort。
@@ -59,6 +68,13 @@ func (u *ConfigUseCase) GetSongdataDBPath(ctx context.Context) (string, error) {
 }
 
 // SetSongdataDBPath は songdata.db のパスを保存する（バリデーションは行わない）。
+// 保存成功後に登録された SongdataPathChangeHook を全て呼ぶ。
 func (u *ConfigUseCase) SetSongdataDBPath(ctx context.Context, path string) error {
-	return u.store.Set(ctx, keySongdataDBPath, path)
+	if err := u.store.Set(ctx, keySongdataDBPath, path); err != nil {
+		return err
+	}
+	for _, fn := range u.songdataHooks {
+		fn()
+	}
+	return nil
 }

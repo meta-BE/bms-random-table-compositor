@@ -64,3 +64,14 @@ func TestConfigUseCase_SetThenGetSongdataDBPath(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "/tmp/songdata.db", p)
 }
+
+func TestConfigUseCase_SetSongdataDBPath_FiresHooks(t *testing.T) {
+	store := newFakeConfigStore()
+	uc := usecase.NewConfigUseCase(store)
+	calls := 0
+	uc.AddSongdataPathChangeHook(func() { calls++ })
+	uc.AddSongdataPathChangeHook(func() { calls++ })
+
+	require.NoError(t, uc.SetSongdataDBPath(context.Background(), "/path"))
+	require.Equal(t, 2, calls)
+}
