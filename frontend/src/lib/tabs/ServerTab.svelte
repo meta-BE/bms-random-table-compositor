@@ -1,202 +1,221 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
-  import {
-    api,
-    type ServerConfig,
-    type ServerStatusDTO,
-    type OwnedCacheStatusDTO,
-  } from '../api';
+  import { api, type ServerConfig, type ServerStatusDTO, type OwnedCacheStatusDTO } from '../api';
 
   let cfg: ServerConfig = { port: 50000, songdataDbPath: '' };
-  let saveError = '';
+  let savedCfg: ServerConfig = { port: 50000, songdataDbPath: '' };
+  let status: ServerStatusDTO = { state: 'stopped', port: 0, startedAt: '', lastError: '' };
+  let owned: OwnedCacheStatusDTO = { loaded: false, count: 0, loadedAt: '', loadedPath: '', lastError: '' };
+
+  let configLoading = true;
   let saving = false;
+  let savingError = '';
+  let serverActing = false;
+  let ownedLoading = true;
+  let ownedReloading = false;
 
-  let status: ServerStatusDTO | null = null;
-  let statusError = '';
-  let busy = false;
+  let unsubServer: (() => void) | null = null;
 
-  let owned: OwnedCacheStatusDTO | null = null;
-  let ownedError = '';
-
-  let unsubscribeStatus: (() => void) | null = null;
-
-  async function load() {
+  onMount(async () => {
     try {
       cfg = await api.getServerConfig();
-    } catch (e: any) {
-      saveError = `設定読み込み失敗: ${String(e)}`;
+      savedCfg = { ...cfg };
+    } catch (e) {
+      savingError = `設定の取得に失敗: ${(e as Error).message}`;
+    } finally {
+      configLoading = false;
     }
     try {
       status = await api.getServerStatus();
-    } catch (e: any) {
-      statusError = String(e);
+    } catch {
+      // status は既定値で続行
     }
     try {
       owned = await api.getOwnedCacheStatus();
-    } catch (e: any) {
-      ownedError = String(e);
+    } catch {
+      // ignore
+    } finally {
+      ownedLoading = false;
+    }
+    unsubServer = api.onServerStatusChanged((s) => {
+      status = s;
+    });
+  });
+
+  onDestroy(() => {
+    if (unsubServer) unsubServer();
+  });
+
+  $: dirty = cfg.port !== savedCfg.port || cfg.songdataDbPath !== savedCfg.songdataDbPath;
+
+  async function pickPath() {
+    try {
+      const picked = await api.pickSongdataDB();
+      if (picked) {
+        cfg.songdataDbPath = picked;
+      }
+    } catch (e) {
+      savingError = `ファイル選択に失敗: ${(e as Error).message}`;
     }
   }
 
   async function save() {
-    saveError = '';
     saving = true;
+    savingError = '';
     try {
-      await api.setServerPort(cfg.port);
-      await api.setSongdataDBPath(cfg.songdataDbPath);
-    } catch (e: any) {
-      saveError = String(e);
+      if (cfg.port !== savedCfg.port) {
+        await api.setServerPort(cfg.port);
+      }
+      if (cfg.songdataDbPath !== savedCfg.songdataDbPath) {
+        await api.setSongdataDBPath(cfg.songdataDbPath);
+      }
+      savedCfg = { ...cfg };
+      // songdata.db パス変更で所持キャッシュが invalidate されるため再取得
+      owned = await api.getOwnedCacheStatus();
+    } catch (e) {
+      savingError = (e as Error).message;
     } finally {
       saving = false;
     }
   }
 
-  async function startServer() {
-    busy = true;
-    statusError = '';
-    try { await api.startServer(); } catch (e: any) { statusError = String(e); }
-    finally { busy = false; status = await api.getServerStatus(); }
+  async function startSrv() {
+    serverActing = true;
+    try {
+      await api.startServer();
+    } catch (e) {
+      // status は server_status:changed イベントで反映されるためここでは握る
+      console.warn('start failed', e);
+    } finally {
+      serverActing = false;
+    }
   }
-
-  async function stopServer() {
-    busy = true;
-    statusError = '';
-    try { await api.stopServer(); } catch (e: any) { statusError = String(e); }
-    finally { busy = false; status = await api.getServerStatus(); }
+  async function stopSrv() {
+    serverActing = true;
+    try { await api.stopServer(); } catch (e) { console.warn(e); } finally { serverActing = false; }
   }
-
-  async function restartServer() {
-    busy = true;
-    statusError = '';
-    try { await api.restartServer(); } catch (e: any) { statusError = String(e); }
-    finally { busy = false; status = await api.getServerStatus(); }
+  async function restartSrv() {
+    serverActing = true;
+    try { await api.restartServer(); } catch (e) { console.warn(e); } finally { serverActing = false; }
   }
 
   async function reloadOwned() {
-    ownedError = '';
-    busy = true;
+    ownedReloading = true;
     try {
       await api.reloadOwnedCache();
       owned = await api.getOwnedCacheStatus();
-    } catch (e: any) {
-      ownedError = String(e);
-      // 失敗時もステータスを取得（lastError が更新されている可能性）
-      try { owned = await api.getOwnedCacheStatus(); } catch {}
+    } catch (e) {
+      console.warn('reload owned failed', e);
     } finally {
-      busy = false;
+      ownedReloading = false;
     }
   }
 
   function formatJST(iso: string): string {
     if (!iso) return '-';
-    const d = new Date(iso);
-    if (isNaN(d.getTime())) return iso;
-    return d.toLocaleString('ja-JP', {
-      timeZone: 'Asia/Tokyo',
-      year: 'numeric', month: '2-digit', day: '2-digit',
-      hour: '2-digit', minute: '2-digit', second: '2-digit',
-    });
-  }
-
-  function stateLabel(s: ServerStatusDTO['state'] | undefined): string {
-    switch (s) {
-      case 'running': return '起動中';
-      case 'stopped': return '停止中';
-      case 'error': return 'エラー';
-      default: return '不明';
+    try {
+      return new Date(iso).toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo', hour12: false });
+    } catch {
+      return iso;
     }
   }
-
-  function stateClass(s: ServerStatusDTO['state'] | undefined): string {
-    switch (s) {
-      case 'running': return 'state ok';
-      case 'stopped': return 'state stopped';
-      case 'error': return 'state err';
-      default: return 'state';
-    }
-  }
-
-  onMount(() => {
-    load();
-    unsubscribeStatus = api.onServerStatusChanged((s) => (status = s));
-  });
-  onDestroy(() => {
-    if (unsubscribeStatus) unsubscribeStatus();
-  });
 </script>
 
-<section class="tab">
-  <h2>サーバ設定</h2>
+<section class="p-4 space-y-6">
+  <!-- 設定 -->
+  <div class="card bg-base-100 shadow-sm border border-base-200">
+    <div class="card-body">
+      <h2 class="card-title text-base">設定</h2>
+      {#if configLoading}
+        <div class="flex items-center gap-2 text-sm">
+          <span class="loading loading-spinner loading-sm"></span>
+          <span>読み込み中…</span>
+        </div>
+      {:else}
+        <label class="form-control">
+          <div class="label"><span class="label-text">ポート番号</span></div>
+          <input
+            class="input input-bordered input-sm w-40"
+            type="number"
+            min="1"
+            max="65535"
+            bind:value={cfg.port}
+          />
+        </label>
 
-  <div class="block">
-    <h3>基本設定</h3>
-    <label>
-      ポート番号
-      <input type="number" min="1" max="65535" bind:value={cfg.port} />
-    </label>
-    <label>
-      songdata.db パス
-      <input type="text" bind:value={cfg.songdataDbPath} placeholder="/path/to/songdata.db" />
-    </label>
-    {#if saveError}
-      <div class="error">{saveError}</div>
-    {/if}
-    <button on:click={save} disabled={saving}>保存</button>
-  </div>
+        <label class="form-control">
+          <div class="label"><span class="label-text">songdata.db のパス</span></div>
+          <div class="join w-full">
+            <input class="input input-bordered input-sm join-item flex-1" type="text" bind:value={cfg.songdataDbPath} />
+            <button class="btn btn-sm join-item" type="button" on:click={pickPath}>参照…</button>
+          </div>
+        </label>
 
-  <div class="block">
-    <h3>サーバステータス</h3>
-    {#if status}
-      <p>
-        <span class={stateClass(status.state)}>● {stateLabel(status.state)}</span>
-        {#if status.state === 'running'}
-          <code>http://127.0.0.1:{status.port}</code>
+        <div class="card-actions justify-end mt-2">
+          <button class="btn btn-primary btn-sm" disabled={!dirty || saving} on:click={save}>
+            {#if saving}<span class="loading loading-spinner loading-xs"></span>{/if}
+            保存
+          </button>
+        </div>
+
+        {#if savingError}
+          <div class="alert alert-error mt-2 text-sm">{savingError}</div>
         {/if}
-      </p>
-      {#if status.startedAt}
-        <p class="meta">起動: {formatJST(status.startedAt)}</p>
       {/if}
-      {#if status.lastError}
-        <p class="error">{status.lastError}</p>
-      {/if}
-    {/if}
-    {#if statusError}<div class="error">{statusError}</div>{/if}
-    <div class="actions">
-      <button on:click={startServer} disabled={busy || status?.state === 'running'}>起動</button>
-      <button on:click={stopServer} disabled={busy || status?.state !== 'running'}>停止</button>
-      <button on:click={restartServer} disabled={busy}>再起動</button>
     </div>
   </div>
 
-  <div class="block">
-    <h3>所持譜面キャッシュ</h3>
-    {#if owned}
-      <p>読み込み済み: {owned.count.toLocaleString()} 曲</p>
-      {#if owned.loadedAt}<p class="meta">最終読み込み: {formatJST(owned.loadedAt)}</p>{/if}
-      {#if owned.loadedPath}<p class="meta">パス: <code>{owned.loadedPath}</code></p>{/if}
-      {#if owned.lastError}<p class="error">{owned.lastError}</p>{/if}
-    {/if}
-    {#if ownedError}<div class="error">{ownedError}</div>{/if}
-    <button on:click={reloadOwned} disabled={busy}>再読み込み</button>
+  <!-- サーバ -->
+  <div class="card bg-base-100 shadow-sm border border-base-200">
+    <div class="card-body">
+      <h2 class="card-title text-base">HTTP サーバ</h2>
+      <div class="flex items-center gap-2 text-sm">
+        <span>状態:</span>
+        {#if status.state === 'running'}
+          <span class="badge badge-success">稼働中</span>
+          <span class="text-xs opacity-70">port {status.port} / 起動 {formatJST(status.startedAt)}</span>
+        {:else if status.state === 'error'}
+          <span class="badge badge-error">エラー</span>
+        {:else}
+          <span class="badge">停止中</span>
+        {/if}
+      </div>
+      {#if status.state === 'error' && status.lastError}
+        <div class="alert alert-error text-sm mt-2 whitespace-pre-line">{status.lastError}</div>
+      {/if}
+      <div class="card-actions justify-end mt-2">
+        <button class="btn btn-sm" disabled={serverActing || status.state === 'running'} on:click={startSrv}>起動</button>
+        <button class="btn btn-sm" disabled={serverActing || status.state !== 'running'} on:click={stopSrv}>停止</button>
+        <button class="btn btn-sm" disabled={serverActing} on:click={restartSrv}>再起動</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 所持キャッシュ -->
+  <div class="card bg-base-100 shadow-sm border border-base-200">
+    <div class="card-body">
+      <h2 class="card-title text-base">所持キャッシュ</h2>
+      {#if ownedLoading}
+        <div class="flex items-center gap-2 text-sm">
+          <span class="loading loading-spinner loading-sm"></span>
+          <span>読み込み中…</span>
+        </div>
+      {:else}
+        <div class="text-sm space-y-1">
+          <div>状態: {owned.loaded ? `読み込み済み (${owned.count} 件)` : '未読み込み'}</div>
+          <div class="text-xs opacity-70">パス: {owned.loadedPath || '(未設定)'} </div>
+          <div class="text-xs opacity-70">最終読み込み: {formatJST(owned.loadedAt)}</div>
+          {#if owned.lastError}
+            <div class="alert alert-warning text-xs">{owned.lastError}</div>
+          {/if}
+        </div>
+        <div class="card-actions justify-end mt-2">
+          <button class="btn btn-sm" disabled={ownedReloading} on:click={reloadOwned}>
+            {#if ownedReloading}<span class="loading loading-spinner loading-xs"></span>{/if}
+            再読み込み
+          </button>
+        </div>
+      {/if}
+    </div>
   </div>
 </section>
-
-<style>
-  .tab { padding: 12px 16px; }
-  h2 { margin: 0 0 12px; font-size: 16px; }
-  h3 { margin: 0 0 8px; font-size: 14px; }
-  .block { border: 1px solid #ddd; padding: 12px; margin-bottom: 12px; background: #fafafa; }
-  label { display: block; margin: 6px 0; font-size: 13px; }
-  input[type="number"], input[type="text"] {
-    width: 100%; box-sizing: border-box; padding: 4px 6px; font-size: 13px;
-  }
-  .actions { display: flex; gap: 6px; margin-top: 8px; }
-  button { padding: 4px 10px; cursor: pointer; }
-  .state { font-weight: bold; }
-  .state.ok { color: #2c8a3e; }
-  .state.stopped { color: #888; }
-  .state.err { color: #b00020; }
-  .meta { color: #666; font-size: 12px; }
-  .error { color: #b00020; margin: 4px 0; }
-  code { font-family: monospace; background: #eef; padding: 0 4px; }
-</style>
