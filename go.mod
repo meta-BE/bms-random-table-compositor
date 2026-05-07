@@ -6,6 +6,7 @@ toolchain go1.24.3
 
 require (
 	fyne.io/systray v1.12.1
+	github.com/oklog/ulid/v2 v2.1.0
 	github.com/stretchr/testify v1.11.1
 	github.com/wailsapp/wails/v2 v2.11.0
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1
