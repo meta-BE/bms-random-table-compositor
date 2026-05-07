@@ -22,11 +22,22 @@ func NewApp(services *app.Services) *App {
 	return &App{services: services}
 }
 
-// startup は OnStartup で呼ばれる。
+// startup は OnStartup で呼ばれる。ハンドラに ctx を引き渡し、ソース表の
+// バックグラウンド更新を起動する。
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 	a.services.ConfigHandler.SetContext(ctx)
+	a.services.SourceTableHandler.SetContext(ctx)
 	a.services.Logger.Info("wails startup")
+
+	go func() {
+		a.services.Logger.Info("startup refresh all begin")
+		if err := a.services.SourceTableUseCase.RefreshAll(ctx); err != nil {
+			a.services.Logger.Warn("startup refresh all failed", "err", err)
+		}
+		a.services.Logger.Info("startup refresh all done")
+		wailsruntime.EventsEmit(ctx, "source_table:refresh_all_done")
+	}()
 }
 
 // onBeforeClose はウィンドウクローズ前に呼ばれる。
