@@ -254,3 +254,106 @@ func TestSourceTableUseCase_UpdateDisplayName_OverwritesField(t *testing.T) {
 	require.NoError(t, uc.UpdateDisplayName(context.Background(), "a", "new"))
 	require.Equal(t, "new", repo.rows["a"].DisplayName)
 }
+
+// ---- Refresh テスト ----
+
+func TestSourceTableUseCase_RefreshOne_Success_HTML(t *testing.T) {
+	repo := newFakeSourceRepo()
+	fetcher := newFakeFetcher()
+	repo.rows["id-1"] = domain.SourceTable{
+		ID: "id-1", InputURL: "https://x/h.html", InputKind: domain.InputKindHTML,
+		LastFetchStatus: domain.FetchStatusNever,
+	}
+	fetcher.results["https://x/h.html"] = port.FetchedTable{
+		Header: domain.BMSTableHeader{Name: "Hello", Symbol: "h"},
+		Charts: []domain.SourceChart{
+			{Position: 0, MD5: "aaaa", Level: "0", Raw: map[string]any{"md5": "aaaa"}},
+		},
+		ETag: `"e1"`,
+	}
+	uc := usecase.NewSourceTableUseCase(repo, fetcher, &fakeIDGen{}, newSilentLogger())
+	require.NoError(t, uc.RefreshOne(context.Background(), "id-1"))
+	require.Equal(t, 1, fetcher.htmlCalls)
+	require.Equal(t, 0, fetcher.headCalls)
+	require.Equal(t, "Hello", repo.rows["id-1"].Name)
+	require.Equal(t, domain.FetchStatusOK, repo.rows["id-1"].LastFetchStatus)
+}
+
+func TestSourceTableUseCase_RefreshOne_Success_HeaderJSON(t *testing.T) {
+	repo := newFakeSourceRepo()
+	fetcher := newFakeFetcher()
+	repo.rows["id-2"] = domain.SourceTable{
+		ID: "id-2", InputURL: "https://x/header.json", InputKind: domain.InputKindHeaderJSON,
+		LastFetchStatus: domain.FetchStatusNever,
+	}
+	fetcher.results["https://x/header.json"] = port.FetchedTable{
+		Header: domain.BMSTableHeader{Name: "By header", Symbol: "b"},
+	}
+	uc := usecase.NewSourceTableUseCase(repo, fetcher, &fakeIDGen{}, newSilentLogger())
+	require.NoError(t, uc.RefreshOne(context.Background(), "id-2"))
+	require.Equal(t, 0, fetcher.htmlCalls)
+	require.Equal(t, 1, fetcher.headCalls)
+	require.Equal(t, "By header", repo.rows["id-2"].Name)
+}
+
+func TestSourceTableUseCase_RefreshOne_FetchError_MarksError(t *testing.T) {
+	repo := newFakeSourceRepo()
+	fetcher := newFakeFetcher()
+	repo.rows["id-3"] = domain.SourceTable{
+		ID: "id-3", InputURL: "https://x/h.html", InputKind: domain.InputKindHTML,
+		LastFetchStatus: domain.FetchStatusOK, // 前回は成功していた
+	}
+	fetcher.errs["https://x/h.html"] = errors.New("dns failure")
+	uc := usecase.NewSourceTableUseCase(repo, fetcher, &fakeIDGen{}, newSilentLogger())
+	require.NoError(t, uc.RefreshOne(context.Background(), "id-3"),
+		"取得失敗そのものはエラー扱いにせず、MarkFetchError で記録する")
+	require.Equal(t, domain.FetchStatusError, repo.rows["id-3"].LastFetchStatus)
+	require.Equal(t, "dns failure", repo.rows["id-3"].LastFetchError)
+}
+
+func TestSourceTableUseCase_RefreshOne_NotModified(t *testing.T) {
+	repo := newFakeSourceRepo()
+	fetcher := newFakeFetcher()
+	repo.rows["id-4"] = domain.SourceTable{
+		ID: "id-4", InputURL: "https://x/h.html", InputKind: domain.InputKindHTML,
+		ETag:            `"prev"`,
+		LastFetchStatus: domain.FetchStatusOK,
+	}
+	fetcher.results["https://x/h.html"] = port.FetchedTable{NotModified: true, ETag: `"prev"`}
+	uc := usecase.NewSourceTableUseCase(repo, fetcher, &fakeIDGen{}, newSilentLogger())
+	require.NoError(t, uc.RefreshOne(context.Background(), "id-4"))
+	saved := repo.saved["id-4"]
+	require.True(t, saved.NotModified)
+}
+
+func TestSourceTableUseCase_RefreshOne_UnknownIDIsError(t *testing.T) {
+	uc := usecase.NewSourceTableUseCase(newFakeSourceRepo(), newFakeFetcher(),
+		&fakeIDGen{}, newSilentLogger())
+	require.Error(t, uc.RefreshOne(context.Background(), "missing"))
+}
+
+func TestSourceTableUseCase_RefreshAll_RunsAllAndContinuesOnError(t *testing.T) {
+	repo := newFakeSourceRepo()
+	fetcher := newFakeFetcher()
+	for _, id := range []string{"a", "b", "c", "d", "e"} {
+		repo.rows[id] = domain.SourceTable{
+			ID: id, InputURL: "https://x/" + id, InputKind: domain.InputKindHTML,
+			LastFetchStatus: domain.FetchStatusNever,
+		}
+		fetcher.results["https://x/"+id] = port.FetchedTable{
+			Header: domain.BMSTableHeader{Name: "n-" + id, Symbol: "s"},
+		}
+	}
+	// 1 件だけわざと失敗させる
+	fetcher.results["https://x/c"] = port.FetchedTable{}
+	fetcher.errs["https://x/c"] = errors.New("boom")
+
+	uc := usecase.NewSourceTableUseCase(repo, fetcher, &fakeIDGen{}, newSilentLogger())
+	require.NoError(t, uc.RefreshAll(context.Background()))
+
+	require.Equal(t, domain.FetchStatusOK, repo.rows["a"].LastFetchStatus)
+	require.Equal(t, domain.FetchStatusOK, repo.rows["b"].LastFetchStatus)
+	require.Equal(t, domain.FetchStatusError, repo.rows["c"].LastFetchStatus)
+	require.Equal(t, domain.FetchStatusOK, repo.rows["d"].LastFetchStatus)
+	require.Equal(t, domain.FetchStatusOK, repo.rows["e"].LastFetchStatus)
+}

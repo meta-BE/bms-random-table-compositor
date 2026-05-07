@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"net/url"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/meta-BE/bms-random-table-compositor/internal/domain"
 	"github.com/meta-BE/bms-random-table-compositor/internal/port"
@@ -99,4 +101,73 @@ func (u *SourceTableUseCase) UpdateDisplayName(ctx context.Context, id string, d
 	}
 	st.DisplayName = displayName
 	return u.repo.Update(ctx, st)
+}
+
+// RefreshOne は単一 SourceTable を取得・保存する。
+// 取得失敗自体はエラーとして返さず、Repo.MarkFetchError で記録して nil を返す
+// （RefreshAll の途中で goroutine を止めないため）。
+// Repo の永続化失敗は通常エラーで返す。
+func (u *SourceTableUseCase) RefreshOne(ctx context.Context, id string) error {
+	st, err := u.repo.Get(ctx, id)
+	if err != nil {
+		return err
+	}
+	now := time.Now()
+
+	var (
+		fetched  port.FetchedTable
+		fetchErr error
+	)
+	switch st.InputKind {
+	case domain.InputKindHTML:
+		fetched, fetchErr = u.fetcher.FetchByHTML(ctx, st.InputURL, st.ETag)
+	case domain.InputKindHeaderJSON:
+		fetched, fetchErr = u.fetcher.FetchByHeader(ctx, st.InputURL, st.ETag)
+	default:
+		fetchErr = fmt.Errorf("不正な input_kind %q", st.InputKind)
+	}
+
+	if fetchErr != nil {
+		u.log.Warn("source table refresh failed",
+			"id", id, "url", st.InputURL, "err", fetchErr)
+		if mErr := u.repo.MarkFetchError(ctx, id, fetchErr, now); mErr != nil {
+			return fmt.Errorf("mark fetch error: %w", mErr)
+		}
+		return nil
+	}
+
+	if err := u.repo.SaveFetched(ctx, id, fetched, now); err != nil {
+		u.log.Error("source table save failed", "id", id, "err", err)
+		return fmt.Errorf("save fetched: %w", err)
+	}
+	u.log.Info("source table refreshed",
+		"id", id, "name", fetched.Header.Name,
+		"charts", len(fetched.Charts), "notModified", fetched.NotModified)
+	return nil
+}
+
+// RefreshAll は登録済み全 SourceTable を並列度 4 で RefreshOne する。
+// 個別失敗は Repo に記録され、RefreshAll 自体はエラーを返さない（List 失敗のみ伝播）。
+func (u *SourceTableUseCase) RefreshAll(ctx context.Context) error {
+	list, err := u.repo.List(ctx)
+	if err != nil {
+		return fmt.Errorf("list source tables: %w", err)
+	}
+	const concurrency = 4
+	sem := make(chan struct{}, concurrency)
+	var wg sync.WaitGroup
+	for _, st := range list {
+		id := st.ID
+		wg.Add(1)
+		sem <- struct{}{}
+		go func() {
+			defer wg.Done()
+			defer func() { <-sem }()
+			if err := u.RefreshOne(ctx, id); err != nil {
+				u.log.Warn("refresh all: one failed", "id", id, "err", err)
+			}
+		}()
+	}
+	wg.Wait()
+	return nil
 }
