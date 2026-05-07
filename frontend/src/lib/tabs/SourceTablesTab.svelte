@@ -72,15 +72,29 @@
   }
 
   async function remove(id: string) {
-    if (!confirm('このソース表を削除しますか？（紐づく譜面キャッシュも消えます）')) {
-      return;
-    }
+    // Wails WebView では window.confirm が機能しないため、即削除する。
+    // 誤操作防止 UI は Plan 4 で別途モーダル化予定。
     try {
       await api.deleteSourceTable(id);
       await load();
     } catch (e: any) {
       listError = String(e);
     }
+  }
+
+  function formatJST(iso: string): string {
+    if (!iso) return '-';
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return iso;
+    return d.toLocaleString('ja-JP', {
+      timeZone: 'Asia/Tokyo',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    });
   }
 
   async function renameRow(id: string, displayName: string) {
@@ -144,11 +158,11 @@
     <thead>
       <tr>
         <th>表示名</th>
-        <th>表名 / 略称</th>
-        <th>状態</th>
-        <th>最終取得</th>
+        <th class="nowrap">略称</th>
+        <th class="nowrap">状態</th>
+        <th class="nowrap">最終取得</th>
         <th>URL</th>
-        <th>操作</th>
+        <th class="nowrap">操作</th>
       </tr>
     </thead>
     <tbody>
@@ -162,16 +176,16 @@
               on:change={(e) => handleDisplayNameChange(r.id, e)}
             />
           </td>
-          <td>{r.name || '(取得中)'} / {r.symbol || ''}</td>
-          <td>
+          <td class="nowrap">{r.symbol || ''}</td>
+          <td class="nowrap">
             <span class="badge badge-{r.lastFetchStatus}">{statusLabel(r.lastFetchStatus)}</span>
             {#if r.lastFetchStatus === 'error'}
               <span class="err-detail" title={r.lastFetchError}>?</span>
             {/if}
           </td>
-          <td>{r.lastFetchedAt || '-'}</td>
+          <td class="nowrap">{formatJST(r.lastFetchedAt)}</td>
           <td class="url-cell" title={r.inputUrl}>{r.inputUrl}</td>
-          <td>
+          <td class="nowrap">
             <button on:click={() => refresh(r.id)} disabled={busy[r.id]}>更新</button>
             <button on:click={() => remove(r.id)}>削除</button>
           </td>
@@ -199,6 +213,7 @@
   table { width: 100%; border-collapse: collapse; font-size: 13px; }
   th, td { border-bottom: 1px solid #eee; padding: 6px 8px; text-align: left; vertical-align: middle; }
   th { background: #fafafa; }
+  .nowrap { white-space: nowrap; }
   .url-cell { max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .badge { padding: 2px 8px; border-radius: 3px; font-size: 12px; }
   .badge-never { background: #eee; color: #666; }
