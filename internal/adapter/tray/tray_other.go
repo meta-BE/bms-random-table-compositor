@@ -1,4 +1,9 @@
-// Package tray は getlantern/systray を使ったシステムトレイ常駐機能を提供する。
+//go:build !darwin
+
+// Package tray は getlantern/systray (互換: fyne.io/systray) を使ったシステムトレイ常駐機能を提供する。
+//
+// macOS では Cocoa/AppKit のメインスレッド要件と Wails が衝突するため、tray は darwin 向けに
+// no-op スタブが提供される（tray_darwin.go 参照）。Windows / Linux では本ファイルの実装が使われる。
 package tray
 
 import (
@@ -33,6 +38,7 @@ type Tray struct {
 	mShow   *systray.MenuItem
 	mQuit   *systray.MenuItem
 	tooltip string
+	running bool
 }
 
 // New は Tray を作る。Run で実際に起動する。
@@ -44,9 +50,13 @@ func New(cb Callbacks) *Tray {
 	}
 }
 
-// Run は systray のメインループを開始する。**呼び出しスレッドはメインスレッドで実行する必要がある**。
+// Run は systray のメインループを開始する。Windows / Linux ではブロッキング。
 // onReady はトレイがUIに登録された後で呼ばれる。
 func (t *Tray) Run(onReady func()) {
+	t.mu.Lock()
+	t.running = true
+	t.mu.Unlock()
+
 	systray.Run(func() {
 		systray.SetTooltip(t.tooltip)
 		systray.SetIcon(IconFor(t.state))
@@ -61,7 +71,9 @@ func (t *Tray) Run(onReady func()) {
 			onReady()
 		}
 	}, func() {
-		// onExit
+		t.mu.Lock()
+		t.running = false
+		t.mu.Unlock()
 	})
 }
 
@@ -93,4 +105,11 @@ func (t *Tray) SetState(s State) {
 // Quit はトレイメインループを停止する。
 func (t *Tray) Quit() {
 	systray.Quit()
+}
+
+// IsRunning は現在トレイが稼働中かを返す（onBeforeClose の挙動分岐に使用）。
+func (t *Tray) IsRunning() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.running
 }

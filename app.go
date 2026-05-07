@@ -29,11 +29,13 @@ func (a *App) startup(ctx context.Context) {
 }
 
 // onBeforeClose はウィンドウクローズ前に呼ばれる。
-// true を返すとクローズが取り消される。本実装ではトレイ格納のため
-// 自前で WindowHide してから true を返す。
+// トレイが稼働中（Windows/Linux）はトレイ格納に変換、稼働していない（macOS）は通常クローズで終了。
 func (a *App) onBeforeClose(ctx context.Context) bool {
-	wailsruntime.WindowHide(ctx)
-	return true
+	if a.tray != nil && a.tray.IsRunning() {
+		wailsruntime.WindowHide(ctx)
+		return true
+	}
+	return false
 }
 
 // shutdown はアプリ完全終了時に呼ばれる。

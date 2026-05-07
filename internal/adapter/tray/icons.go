@@ -1,3 +1,5 @@
+//go:build !darwin
+
 package tray
 
 // 16x16 単色 PNG のハードコード。本実装は Plan 4 で実アイコンに差し替え。
