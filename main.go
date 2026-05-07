@@ -51,6 +51,10 @@ func main() {
 			myApp,
 			services.ConfigHandler,
 			services.SourceTableHandler,
+			services.PublishedTableHandler,
+			services.PickHandler,
+			services.ServerStatusHandler,
+			services.OwnedChartHandler,
 		},
 	}); err != nil {
 		services.Logger.Error("wails run failed", "err", err)

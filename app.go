@@ -6,6 +6,7 @@ import (
 
 	"github.com/meta-BE/bms-random-table-compositor/internal/adapter/tray"
 	"github.com/meta-BE/bms-random-table-compositor/internal/app"
+	"github.com/meta-BE/bms-random-table-compositor/internal/domain"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
@@ -23,13 +24,23 @@ func NewApp(services *app.Services) *App {
 }
 
 // startup は OnStartup で呼ばれる。ハンドラに ctx を引き渡し、ソース表の
-// バックグラウンド更新を起動する。
+// バックグラウンド更新と HTTP サーバの自動起動を行う。
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 	a.services.ConfigHandler.SetContext(ctx)
 	a.services.SourceTableHandler.SetContext(ctx)
+	a.services.PublishedTableHandler.SetContext(ctx)
+	a.services.PickHandler.SetContext(ctx)
+	a.services.ServerStatusHandler.SetContext(ctx)
+	a.services.OwnedChartHandler.SetContext(ctx)
 	a.services.Logger.Info("wails startup")
 
+	// ServerStatus 変化を Wails event 経由でフロントへ流す
+	a.services.ServerUseCase.OnStatusChange(func(s domain.ServerStatus) {
+		wailsruntime.EventsEmit(ctx, "server_status:changed", s)
+	})
+
+	// 起動時のソース表バックグラウンド更新
 	go func() {
 		a.services.Logger.Info("startup refresh all begin")
 		if err := a.services.SourceTableUseCase.RefreshAll(ctx); err != nil {
@@ -37,6 +48,13 @@ func (a *App) startup(ctx context.Context) {
 		}
 		a.services.Logger.Info("startup refresh all done")
 		wailsruntime.EventsEmit(ctx, "source_table:refresh_all_done")
+	}()
+
+	// HTTP サーバ自動起動
+	go func() {
+		if err := a.services.ServerUseCase.Start(ctx); err != nil {
+			a.services.Logger.Warn("auto-start http server failed", "err", err)
+		}
 	}()
 }
 
