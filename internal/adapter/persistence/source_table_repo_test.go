@@ -168,11 +168,10 @@ func TestSourceTableRepoSQL_SaveFetched_ReplacesChartsOnSecondCall(t *testing.T)
 	}
 	require.NoError(t, r.SaveFetched(ctx, "Z", second, time.Now()))
 
-	// Task 7 で LoadCharts 実装後に有効化
-	// charts, err := r.LoadCharts(ctx, "Z")
-	// require.NoError(t, err)
-	// require.Len(t, charts, 1)
-	// require.Equal(t, "x", charts[0].MD5)
+	charts, err := r.LoadCharts(ctx, "Z")
+	require.NoError(t, err)
+	require.Len(t, charts, 1)
+	require.Equal(t, "x", charts[0].MD5)
 }
 
 func TestSourceTableRepoSQL_SaveFetched_NotModifiedKeepsCharts(t *testing.T) {
@@ -199,10 +198,9 @@ func TestSourceTableRepoSQL_SaveFetched_NotModifiedKeepsCharts(t *testing.T) {
 	require.Equal(t, domain.FetchStatusOK, got.LastFetchStatus)
 	require.True(t, got.LastFetchedAt.Equal(t1))
 	require.Equal(t, `"v1"`, got.ETag, "ETag は維持される")
-	// Task 7 で LoadCharts 実装後に有効化
-	// charts, _ := r.LoadCharts(ctx, "Z")
-	// require.Len(t, charts, 1)
-	// require.Equal(t, "a", charts[0].MD5)
+	charts, _ := r.LoadCharts(ctx, "Z")
+	require.Len(t, charts, 1)
+	require.Equal(t, "a", charts[0].MD5)
 }
 
 func TestSourceTableRepoSQL_MarkFetchError_KeepsPreviousCharts(t *testing.T) {
@@ -227,7 +225,41 @@ func TestSourceTableRepoSQL_MarkFetchError_KeepsPreviousCharts(t *testing.T) {
 	require.Equal(t, "boom", got.LastFetchError)
 	require.True(t, got.LastFetchedAt.Equal(errAt))
 
-	// Task 7 で LoadCharts 実装後に有効化
-	// charts, _ := r.LoadCharts(ctx, "Z")
-	// require.Len(t, charts, 1, "失敗時もキャッシュは保持される（spec §8）")
+	charts, _ := r.LoadCharts(ctx, "Z")
+	require.Len(t, charts, 1, "失敗時もキャッシュは保持される（spec §8）")
+}
+
+func TestSourceTableRepoSQL_LoadCharts_OrderByPosition(t *testing.T) {
+	r := setupSourceTableRepo(t)
+	ctx := context.Background()
+	_, _ = r.Create(ctx, domain.SourceTable{
+		ID: "Z", InputURL: "u", InputKind: domain.InputKindHTML, LastFetchStatus: domain.FetchStatusNever,
+	})
+	ft := port.FetchedTable{
+		Header: domain.BMSTableHeader{Name: "n", Symbol: "s"},
+		Charts: []domain.SourceChart{
+			{Position: 2, MD5: "c", Level: "1", Title: "Tc",
+				Raw: map[string]any{"md5": "c", "url": "uc"}},
+			{Position: 0, MD5: "a", Level: "0", Title: "Ta",
+				Raw: map[string]any{"md5": "a", "url": "ua", "lr2_bmsid": float64(7)}},
+			{Position: 1, MD5: "b", Level: "0", Title: "Tb",
+				Raw: map[string]any{"md5": "b"}},
+		},
+	}
+	require.NoError(t, r.SaveFetched(ctx, "Z", ft, time.Now()))
+
+	out, err := r.LoadCharts(ctx, "Z")
+	require.NoError(t, err)
+	require.Len(t, out, 3)
+	require.Equal(t, []int{0, 1, 2}, []int{out[0].Position, out[1].Position, out[2].Position})
+	require.Equal(t, "Z", out[0].SourceID)
+	require.Equal(t, "ua", out[0].Raw["url"], "raw_json はパススルー")
+	require.Equal(t, float64(7), out[0].Raw["lr2_bmsid"])
+}
+
+func TestSourceTableRepoSQL_LoadCharts_EmptyForNoSource(t *testing.T) {
+	r := setupSourceTableRepo(t)
+	out, err := r.LoadCharts(context.Background(), "missing")
+	require.NoError(t, err)
+	require.Empty(t, out)
 }

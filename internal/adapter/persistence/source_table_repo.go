@@ -254,6 +254,42 @@ func (r *SourceTableRepoSQL) SaveFetched(
 	return tx.Commit()
 }
 
+// LoadCharts は source_table_chart を position 昇順で返す。
+func (r *SourceTableRepoSQL) LoadCharts(ctx context.Context, sourceID string) ([]domain.SourceChart, error) {
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT position, md5, sha256, level, title, artist, raw_json
+		 FROM source_table_chart
+		 WHERE source_id=?
+		 ORDER BY position ASC`,
+		sourceID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("load charts %q: %w", sourceID, err)
+	}
+	defer rows.Close()
+
+	var out []domain.SourceChart
+	for rows.Next() {
+		var (
+			c       domain.SourceChart
+			rawJSON string
+		)
+		if err := rows.Scan(
+			&c.Position, &c.MD5, &c.SHA256, &c.Level, &c.Title, &c.Artist, &rawJSON,
+		); err != nil {
+			return nil, err
+		}
+		c.SourceID = sourceID
+		if rawJSON != "" {
+			if err := json.Unmarshal([]byte(rawJSON), &c.Raw); err != nil {
+				return nil, fmt.Errorf("unmarshal raw_json[pos=%d]: %w", c.Position, err)
+			}
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
 // MarkFetchError は取得失敗を記録する。譜面行は触らない（前回成功時のキャッシュを保持）。
 func (r *SourceTableRepoSQL) MarkFetchError(
 	ctx context.Context, sourceID string, fetchErr error, fetchedAt time.Time,
