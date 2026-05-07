@@ -1,0 +1,6 @@
+{
+  "name": "Fixture Table",
+  "symbol": "fx",
+  "data_url": "source_table_fixture_data.json",
+  "level_order": ["0", "1", "2"]
+}

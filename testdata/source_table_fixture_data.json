@@ -1,0 +1,26 @@
+[
+  {
+    "md5": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+    "level": "0",
+    "title": "First Song",
+    "artist": "Artist A",
+    "url": "https://example.com/first",
+    "url_diff": "https://example.com/first/diff",
+    "lr2_bmsid": 1001
+  },
+  {
+    "md5": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "sha256": "",
+    "level": "1",
+    "title": "Second Song",
+    "artist": "Artist B",
+    "url": "https://example.com/second"
+  },
+  {
+    "md5": "cccccccccccccccccccccccccccccccc",
+    "level": "2",
+    "title": "Third Song",
+    "artist": "Artist C"
+  }
+]
