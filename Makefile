@@ -8,7 +8,7 @@
 # - 上記すべてに -dirty が付くケースあり
 # - git 不在時のみ "dev"
 VERSION := $(shell \
-	DIRTY=$$(if [ -n "$$(git status --porcelain 2>/dev/null)" ]; then echo "-dirty"; fi); \
+	DIRTY=$$(if [ -n "$$(git status --porcelain --untracked-files=no 2>/dev/null)" ]; then echo "-dirty"; fi); \
 	T_EXACT=$$(git tag --points-at HEAD --list 'v*' --sort=-version:refname 2>/dev/null | head -1); \
 	if [ -n "$$T_EXACT" ]; then \
 		echo "$$T_EXACT$$DIRTY"; \
