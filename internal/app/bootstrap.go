@@ -33,7 +33,6 @@ type Services struct {
 	PublishedTableHandler *handler.PublishedTableHandler
 	PickHandler           *handler.PickHandler
 	ServerStatusHandler   *handler.ServerStatusHandler
-	OwnedChartHandler     *handler.OwnedChartHandler
 	DashboardHandler      *handler.DashboardHandler
 	SongdataHandler       *handler.SongdataHandler
 	SourceTableUseCase    *usecase.SourceTableUseCase
@@ -109,8 +108,6 @@ func Bootstrap() (*Services, error) {
 	pubRepo := persistence.NewPublishedTableRepoSQL(db)
 	pubUC := usecase.NewPublishedTableUseCase(pubRepo, sourceRepo, idGen, lg)
 	pubHandler := handler.NewPublishedTableHandler(pubUC)
-	ownedRepo := persistence.NewSongdataReader()
-	ownedCache := usecase.NewOwnedMD5Cache(ownedRepo, configStore, systemClock, lg)
 	pickStore := usecase.NewPickResultStore()
 	dashboardUC := usecase.NewDashboardUseCase(pickStore)
 	dashboardHandler := handler.NewDashboardHandler(dashboardUC)
@@ -133,7 +130,6 @@ func Bootstrap() (*Services, error) {
 	})
 	pickUC := usecase.NewPickUseCase(pubRepo, sourceRepo, pickStore, systemClock, randFactory, lg)
 	pickHandler := handler.NewPickHandler(pickUC)
-	ownedHandler := handler.NewOwnedChartHandler(ownedCache)
 	songdataHandler := handler.NewSongdataHandler(sourceAttacher, configUC, pickUC)
 
 	// songdata_db_path 変更時に sd を再アタッチ + ピックキャッシュを clear
@@ -148,7 +144,6 @@ func Bootstrap() (*Services, error) {
 		if err := sourceAttacher.ReAttach(bgCtx, newPath); err != nil {
 			lg.Warn("re-attach songdata failed", "err", err, "path", newPath)
 		}
-		ownedCache.Invalidate() // 旧 owned cache 経路 (Task 8 で削除)
 		pickUC.InvalidateAll()
 	})
 
@@ -174,7 +169,6 @@ func Bootstrap() (*Services, error) {
 		PublishedTableHandler: pubHandler,
 		PickHandler:           pickHandler,
 		ServerStatusHandler:   serverHandler,
-		OwnedChartHandler:     ownedHandler,
 		DashboardHandler:      dashboardHandler,
 		SongdataHandler:       songdataHandler,
 		SourceTableUseCase:    sourceUC,

@@ -54,7 +54,6 @@ func main() {
 			services.PublishedTableHandler,
 			services.PickHandler,
 			services.ServerStatusHandler,
-			services.OwnedChartHandler,
 			services.SongdataHandler,
 			services.DashboardHandler,
 		},

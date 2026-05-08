@@ -29,7 +29,7 @@ func NewConfigUseCase(store port.ConfigStore) *ConfigUseCase {
 }
 
 // AddSongdataPathChangeHook は songdata_db_path 変更時に呼ばれるフックを追加する。
-// Bootstrap で OwnedMD5Cache.Invalidate と PickResultStore.Clear を登録する想定。
+// Bootstrap で SongdataAttacher.ReAttach と PickResultStore.Clear を登録する想定。
 func (u *ConfigUseCase) AddSongdataPathChangeHook(fn func()) {
 	u.songdataHooks = append(u.songdataHooks, fn)
 }

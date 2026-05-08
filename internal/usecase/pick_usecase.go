@@ -75,7 +75,7 @@ func (u *PickUseCase) ManualRefresh(ctx context.Context, publishedID string) err
 }
 
 // InvalidateAll は store の全エントリを削除する。
-// 設定変更（songdata_db_path 変更等）で OwnedMD5Cache が invalidate された後に呼ばれる想定。
+// 設定変更（songdata_db_path 変更等）で SongdataAttacher が再接続された後に呼ばれる想定。
 func (u *PickUseCase) InvalidateAll() {
 	u.store.Clear()
 }
