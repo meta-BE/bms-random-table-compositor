@@ -15,8 +15,9 @@ import (
 
 // SongdataAttacher はメイン *sql.DB に対する songdata.db の ATTACH/DETACH ライフサイクルを管理する。
 // SetMaxOpenConns(1) 前提 (ATTACH はコネクション単位)。
-// アタッチ時に EXISTS クエリ高速化のため (md5, sha256) 複合インデックスを作る (RW で開く必要)。
-// アプリは sd 経由で SELECT と CREATE INDEX 以外を発行しない (beatoraja DB 安全のため)。
+// 通常運用は RO ATTACH で行い、書込み権限は持たない (beatoraja 並行稼働中の DB 破壊事故防止)。
+// 性能インデックス (md5, sha256) は Attach 時に一時的に独立した RW 接続を開いて
+// CREATE INDEX IF NOT EXISTS を実行して即 close する。RW 期間は数ミリ秒に限定される。
 // GUI 表示用に最終アタッチ状態とエラーをスナップショット保持する。
 type SongdataAttacher struct {
 	db    *sql.DB
@@ -36,7 +37,7 @@ func NewSongdataAttacher(db *sql.DB, clk port.Clock, log *slog.Logger) *Songdata
 	return &SongdataAttacher{db: db, clock: clk, log: log}
 }
 
-// Attach は songdata.db を schema 'sd' として RW ATTACH する。
+// Attach は songdata.db を schema 'sd' として RO ATTACH する。
 // path が空なら何もしない (失敗ではない)。
 // 既にアタッチされている状態で呼ばれた場合は一度 DETACH してから ATTACH し直す。
 func (a *SongdataAttacher) Attach(ctx context.Context, path string) error {
@@ -48,9 +49,13 @@ func (a *SongdataAttacher) Attach(ctx context.Context, path string) error {
 			return err
 		}
 	}
-	// CREATE INDEX を発行するため RW で開く。アプリは SELECT と CREATE INDEX 以外
-	// (UPDATE/INSERT/DELETE/DROP 等) を sd 経由で発行しない方針 (bms-elsa パターン)。
-	dsn := fmt.Sprintf("file:%s?mode=rw", url.QueryEscape(path))
+
+	// 性能インデックスを独立 RW 接続で確保してから即 close。
+	// beatoraja 並行稼働中でも通常の ATTACH は RO のまま維持できる。
+	a.ensurePerformanceIndex(ctx, path)
+
+	// 通常運用は RO。書込み権限を持たないことで beatoraja DB の破壊事故を物理的に防ぐ。
+	dsn := fmt.Sprintf("file:%s?mode=ro", url.QueryEscape(path))
 	if _, err := a.db.ExecContext(ctx, "ATTACH DATABASE ? AS sd", dsn); err != nil {
 		a.recordError(err.Error())
 		return fmt.Errorf("attach songdata %q: %w", path, err)
@@ -62,18 +67,6 @@ func (a *SongdataAttacher) Attach(ctx context.Context, path string) error {
 		// COUNT 失敗時は ATTACH 状態を維持しつつエラー記録 (テーブル不在等)
 		a.recordError(fmt.Sprintf("count sd.song: %v", err))
 		count = 0
-	}
-
-	// (md5, sha256) 複合インデックス。
-	// beatoraja の song テーブル PK は path で md5 にインデックスがないため
-	// LoadCharts の EXISTS sd.song WHERE md5=? が full scan になる (5000 x 15000 = 75M 行)。
-	// score テーブルの PK は (sha256, mode) なので、後で sd.score との JOIN を
-	// 行う際に sha256 列がカバーされる複合インデックスにしておく。
-	// IF NOT EXISTS のため毎起動冪等。失敗 (beatoraja 並行書込みロック等) は warn 継続。
-	if _, err := a.db.ExecContext(ctx,
-		"CREATE INDEX IF NOT EXISTS sd.idx_song_md5_sha256 ON song(md5, sha256)",
-	); err != nil {
-		a.log.Warn("create index sd.idx_song_md5_sha256 failed", "err", err, "path", path)
 	}
 
 	now := a.clock.Now()
@@ -139,4 +132,26 @@ func (a *SongdataAttacher) recordError(msg string) {
 	a.mu.Lock()
 	a.lastErr = msg
 	a.mu.Unlock()
+}
+
+// ensurePerformanceIndex は songdata.db に対して LoadCharts EXISTS 高速化用の
+// (md5, sha256) 複合インデックスを保証する。
+// ATTACH 経由ではなく一時 *sql.DB を RW で短時間開いて CREATE INDEX IF NOT EXISTS を
+// 実行して即 close する。これにより通常稼働中の attacher は RO のままで、
+// beatoraja 並行稼働中のうっかり書込み事故を物理的に防ぐ。
+// 失敗 (beatoraja の write lock 競合等) は warn のみで継続: インデックス未作成だと
+// 単に EXISTS が full scan に戻るだけで動作はする。次回起動時に再試行される。
+func (a *SongdataAttacher) ensurePerformanceIndex(ctx context.Context, path string) {
+	dsn := fmt.Sprintf("file:%s?mode=rw", url.QueryEscape(path))
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		a.log.Warn("ensure perf index: open rw failed", "err", err, "path", path)
+		return
+	}
+	defer db.Close()
+	if _, err := db.ExecContext(ctx,
+		"CREATE INDEX IF NOT EXISTS idx_song_md5_sha256 ON song(md5, sha256)",
+	); err != nil {
+		a.log.Warn("ensure perf index: create failed", "err", err, "path", path)
+	}
 }
