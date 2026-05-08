@@ -1,5 +1,5 @@
 ---
-name: release-notes
+name: update-release-notes
 description: |
   GitHub Releases の body にリリースノートを生成・更新する。
   「リリースノート作成して」「v0.11.2 のリリースノートを作って」
