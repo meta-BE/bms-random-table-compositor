@@ -131,3 +131,41 @@ func TestSongdataAttacher_Attach_CreatesMD5Index(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "idx_song_md5_sha256", name)
 }
+
+// TestSongdataAttacher_Attach_CreatesIndexOnFreshDB は ensurePerformanceIndex の
+// 新規作成パス (RW 短命接続で CREATE INDEX を実行する経路) をカバーする。
+// testdata/songdata.db は既存テスト実行で索引が作られた状態のため
+// IF NOT EXISTS no-op パスしか踏まれない。本テストは fresh な songdata.db を
+// 作って実際に CREATE INDEX が走ることを保証する。
+func TestSongdataAttacher_Attach_CreatesIndexOnFreshDB(t *testing.T) {
+	// 最小スキーマの songdata.db を作成 (idx_song_md5_sha256 なし)
+	dir := t.TempDir()
+	songdataPath := filepath.Join(dir, "songdata.db")
+	src, err := sql.Open("sqlite", songdataPath)
+	require.NoError(t, err)
+	_, err = src.Exec(`CREATE TABLE song (md5 TEXT NOT NULL, sha256 TEXT NOT NULL DEFAULT '', title TEXT, PRIMARY KEY(md5))`)
+	require.NoError(t, err)
+	require.NoError(t, src.Close())
+
+	// fresh な songdata.db に index がまだ無いことを確認
+	verify, err := sql.Open("sqlite", songdataPath)
+	require.NoError(t, err)
+	var indexCount int
+	require.NoError(t, verify.QueryRowContext(context.Background(),
+		"SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_song_md5_sha256'",
+	).Scan(&indexCount))
+	require.Equal(t, 0, indexCount, "fresh DB のはずなのに index が存在する")
+	require.NoError(t, verify.Close())
+
+	// Attach (内部で ensurePerformanceIndex が走り CREATE INDEX が実行されるはず)
+	db := newAttacherTestDB(t)
+	a := newAttacher(t, db)
+	require.NoError(t, a.Attach(context.Background(), songdataPath))
+
+	// アタッチ済 sd 経由で index が見えることを確認
+	var name string
+	require.NoError(t, db.QueryRowContext(context.Background(),
+		"SELECT name FROM sd.sqlite_master WHERE type='index' AND name='idx_song_md5_sha256'",
+	).Scan(&name))
+	require.Equal(t, "idx_song_md5_sha256", name)
+}
