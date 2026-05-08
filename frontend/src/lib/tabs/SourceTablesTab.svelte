@@ -1,226 +1,235 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
-  import { api, type SourceTableDTO, type AddSourceTableRequest } from '../api';
+  import { api, type SourceTableDTO } from '../api';
+  import { confirm } from '../components/confirm';
+  import ContextMenu, { type MenuItem } from '../components/ContextMenu.svelte';
 
   let rows: SourceTableDTO[] = [];
-  let loading = false;
+  let loading = true;
   let listError = '';
-  let addError = '';
-  let newUrl = '';
-  let busy: Record<string, boolean> = {};
-  let unsubscribe: (() => void) | null = null;
 
-  async function load() {
+  let newUrl = '';
+  let adding = false;
+  let addError = '';
+
+  let refreshingAll = false;
+  let refreshingId: string | null = null;
+
+  let menu: ContextMenu;
+  let unsubRefreshAll: (() => void) | null = null;
+
+  onMount(async () => {
+    await reload();
+    unsubRefreshAll = api.onSourceTableRefreshAllDone(async () => {
+      await reload();
+    });
+  });
+
+  onDestroy(() => {
+    if (unsubRefreshAll) unsubRefreshAll();
+  });
+
+  async function reload() {
     loading = true;
     listError = '';
     try {
       rows = await api.listSourceTables();
-    } catch (e: any) {
-      listError = `読み込みエラー: ${String(e)}`;
+    } catch (e) {
+      listError = (e as Error).message;
     } finally {
       loading = false;
     }
   }
 
   async function add() {
-    addError = '';
-    if (!newUrl) {
+    if (!newUrl.trim()) {
       addError = 'URL を入力してください';
       return;
     }
-    const req: AddSourceTableRequest = { url: newUrl };
+    adding = true;
+    addError = '';
     try {
-      const id = await api.addSourceTable(req);
+      await api.addSourceTable({ url: newUrl.trim() });
       newUrl = '';
-      await load();
-      // 追加直後に取得を試みる（バックグラウンド）
-      busy = { ...busy, [id]: true };
-      api
-        .refreshSourceTable(id)
-        .catch((e) => console.warn('initial refresh failed', e))
-        .finally(async () => {
-          busy = { ...busy, [id]: false };
-          await load();
-        });
-    } catch (e: any) {
-      addError = String(e);
-    }
-  }
-
-  async function refresh(id: string) {
-    busy = { ...busy, [id]: true };
-    try {
-      await api.refreshSourceTable(id);
-      await load();
-    } catch (e: any) {
-      listError = String(e);
+      await reload();
+      // 追加直後にバックグラウンド更新を発火
+      void api.refreshAllSourceTables();
+    } catch (e) {
+      addError = (e as Error).message;
     } finally {
-      busy = { ...busy, [id]: false };
+      adding = false;
     }
   }
 
   async function refreshAll() {
-    loading = true;
+    refreshingAll = true;
     try {
       await api.refreshAllSourceTables();
-      await load();
-    } catch (e: any) {
-      listError = String(e);
+      await reload();
     } finally {
-      loading = false;
+      refreshingAll = false;
     }
   }
 
-  async function remove(id: string) {
-    // Wails WebView では window.confirm が機能しないため、即削除する。
-    // 誤操作防止 UI は Plan 4 で別途モーダル化予定。
+  async function refreshOne(id: string) {
+    refreshingId = id;
     try {
-      await api.deleteSourceTable(id);
-      await load();
-    } catch (e: any) {
-      listError = String(e);
+      await api.refreshSourceTable(id);
+      await reload();
+    } finally {
+      refreshingId = null;
     }
+  }
+
+  async function rename(row: SourceTableDTO, newName: string) {
+    try {
+      await api.updateSourceTableDisplayName(row.id, newName);
+      row.displayName = newName;
+    } catch (e) {
+      console.warn('rename failed', e);
+    }
+  }
+
+  function handleNameInput(row: SourceTableDTO, e: Event) {
+    const t = e.currentTarget as HTMLInputElement;
+    rename(row, t.value);
+  }
+
+  async function remove(row: SourceTableDTO) {
+    const ok = await confirm({
+      title: 'ソース表を削除',
+      message: `「${row.displayName || row.name || row.inputUrl}」を削除します。\n紐付く公開表も削除されます。続行しますか？`,
+      confirmLabel: '削除',
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      await api.deleteSourceTable(row.id);
+      await reload();
+    } catch (e) {
+      console.warn('delete failed', e);
+    }
+  }
+
+  function onRowContextMenu(e: MouseEvent, row: SourceTableDTO) {
+    const items: MenuItem[] = [
+      { label: '再取得', onClick: () => void refreshOne(row.id), disabled: refreshingId === row.id },
+      { label: '削除', danger: true, onClick: () => void remove(row) },
+    ];
+    menu.open(e, items);
+  }
+
+  function statusBadge(s: SourceTableDTO): { cls: string; label: string } {
+    if (s.lastFetchStatus === 'ok') return { cls: 'badge-success', label: 'OK' };
+    if (s.lastFetchStatus === 'error') return { cls: 'badge-error', label: 'エラー' };
+    return { cls: 'badge-ghost', label: '未取得' };
   }
 
   function formatJST(iso: string): string {
     if (!iso) return '-';
-    const d = new Date(iso);
-    if (isNaN(d.getTime())) return iso;
-    return d.toLocaleString('ja-JP', {
-      timeZone: 'Asia/Tokyo',
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-    });
-  }
-
-  async function renameRow(id: string, displayName: string) {
     try {
-      await api.updateSourceTableDisplayName(id, displayName);
-      await load();
-    } catch (e: any) {
-      listError = String(e);
+      return new Date(iso).toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo', hour12: false });
+    } catch {
+      return iso;
     }
   }
-
-  function handleDisplayNameChange(id: string, e: Event) {
-    const target = e.currentTarget as HTMLInputElement;
-    renameRow(id, target.value);
-  }
-
-  function statusLabel(s: SourceTableDTO['lastFetchStatus']): string {
-    switch (s) {
-      case 'ok':
-        return '取得済み';
-      case 'error':
-        return 'エラー';
-      default:
-        return '未取得';
-    }
-  }
-
-  onMount(() => {
-    load();
-    unsubscribe = api.onSourceTableRefreshAllDone(() => {
-      load();
-    });
-  });
-
-  onDestroy(() => {
-    if (unsubscribe) unsubscribe();
-  });
 </script>
 
-<section class="tab">
-  <h2>ソース表</h2>
-
-  <div class="add-form">
-    <label class="row">
-      <span class="label">URL（HTML / header.json）</span>
-      <input type="text" bind:value={newUrl} placeholder="https://example.com/table.html" />
-    </label>
-    <div class="actions">
-      <button on:click={add} disabled={!newUrl}>追加</button>
-      <button on:click={refreshAll} disabled={loading}>すべて再取得</button>
+<section class="p-4 space-y-4">
+  <!-- 追加 -->
+  <div class="card bg-base-100 shadow-sm border border-base-200">
+    <div class="card-body">
+      <h2 class="card-title text-base">ソース表を追加</h2>
+      <div class="join">
+        <input
+          class="input input-bordered input-sm join-item flex-1"
+          type="text"
+          placeholder="HTML or header.json の URL"
+          bind:value={newUrl}
+          on:keydown={(e) => e.key === 'Enter' && add()}
+        />
+        <button class="btn btn-primary btn-sm join-item" disabled={adding} on:click={add}>
+          {#if adding}<span class="loading loading-spinner loading-xs"></span>{/if}
+          追加
+        </button>
+      </div>
+      {#if addError}<div class="alert alert-error text-sm">{addError}</div>{/if}
     </div>
-    {#if addError}<p class="message err">{addError}</p>{/if}
   </div>
 
-  {#if loading}
-    <p>読み込み中...</p>
-  {/if}
-  {#if listError}<p class="message err">{listError}</p>{/if}
+  <!-- 一覧 -->
+  <div class="card bg-base-100 shadow-sm border border-base-200">
+    <div class="card-body">
+      <div class="flex items-center justify-between">
+        <h2 class="card-title text-base">登録済みソース表</h2>
+        <button class="btn btn-sm" disabled={refreshingAll} on:click={refreshAll}>
+          {#if refreshingAll}<span class="loading loading-spinner loading-xs"></span>{/if}
+          一括再取得
+        </button>
+      </div>
 
-  <table>
-    <thead>
-      <tr>
-        <th>表示名</th>
-        <th class="nowrap">略称</th>
-        <th class="nowrap">状態</th>
-        <th class="nowrap">最終取得</th>
-        <th>URL</th>
-        <th class="nowrap">操作</th>
-      </tr>
-    </thead>
-    <tbody>
-      {#each rows as r (r.id)}
-        <tr class:row-error={r.lastFetchStatus === 'error'}>
-          <td>
-            <input
-              type="text"
-              value={r.displayName}
-              placeholder={r.name || '(取得中)'}
-              on:change={(e) => handleDisplayNameChange(r.id, e)}
-            />
-          </td>
-          <td class="nowrap">{r.symbol || ''}</td>
-          <td class="nowrap">
-            <span class="badge badge-{r.lastFetchStatus}">{statusLabel(r.lastFetchStatus)}</span>
-            {#if r.lastFetchStatus === 'error'}
-              <span class="err-detail" title={r.lastFetchError}>?</span>
-            {/if}
-          </td>
-          <td class="nowrap">{formatJST(r.lastFetchedAt)}</td>
-          <td class="url-cell" title={r.inputUrl}>{r.inputUrl}</td>
-          <td class="nowrap">
-            <button on:click={() => refresh(r.id)} disabled={busy[r.id]}>更新</button>
-            <button on:click={() => remove(r.id)}>削除</button>
-          </td>
-        </tr>
-      {/each}
-      {#if rows.length === 0 && !loading}
-        <tr>
-          <td colspan="6" class="empty">登録なし</td>
-        </tr>
+      {#if loading}
+        <div class="flex items-center gap-2 text-sm py-4">
+          <span class="loading loading-spinner loading-sm"></span>
+          <span>読み込み中…</span>
+        </div>
+      {:else if listError}
+        <div class="alert alert-error text-sm">{listError}</div>
+      {:else if rows.length === 0}
+        <div class="text-sm opacity-70 py-4">ソース表が登録されていません。上の入力欄から URL を追加してください。</div>
+      {:else}
+        <div class="overflow-x-auto">
+          <table class="table table-sm table-zebra">
+            <thead>
+              <tr>
+                <th>表示名 / Name</th>
+                <th>URL</th>
+                <th>状態</th>
+                <th>最終取得</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {#each rows as row (row.id)}
+                {@const sb = statusBadge(row)}
+                <tr on:contextmenu={(e) => onRowContextMenu(e, row)}>
+                  <td>
+                    <input
+                      class="input input-bordered input-xs w-full"
+                      type="text"
+                      value={row.displayName}
+                      placeholder={row.name || '(未取得)'}
+                      on:change={(e) => handleNameInput(row, e)}
+                    />
+                    <div class="text-xs opacity-60 mt-1">{row.symbol}</div>
+                  </td>
+                  <td class="text-xs break-all max-w-xs">{row.inputUrl}</td>
+                  <td>
+                    <span class="badge {sb.cls}">{sb.label}</span>
+                    {#if row.lastFetchError}
+                      <div class="text-xs text-error mt-1 whitespace-pre-line">{row.lastFetchError}</div>
+                    {/if}
+                  </td>
+                  <td class="text-xs">{formatJST(row.lastFetchedAt)}</td>
+                  <td class="whitespace-nowrap">
+                    <button
+                      class="btn btn-xs"
+                      disabled={refreshingId === row.id}
+                      on:click={() => refreshOne(row.id)}
+                    >
+                      {#if refreshingId === row.id}<span class="loading loading-spinner loading-xs"></span>{/if}
+                      再取得
+                    </button>
+                    <button class="btn btn-xs btn-error btn-outline" on:click={() => remove(row)}>削除</button>
+                  </td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
       {/if}
-    </tbody>
-  </table>
+    </div>
+  </div>
 </section>
 
-<style>
-  .tab { padding: 16px; }
-  h2 { margin-top: 0; font-size: 16px; }
-  .add-form { border: 1px solid #e0e0e0; padding: 12px; border-radius: 6px; margin-bottom: 16px; }
-  .row { display: flex; flex-direction: column; gap: 4px; margin-bottom: 8px; }
-  .label { font-size: 13px; color: #555; }
-  input[type="text"], select { padding: 6px 8px; font-size: 13px; }
-  .actions { display: flex; gap: 8px; margin-top: 8px; }
-  button { padding: 4px 10px; font-size: 13px; cursor: pointer; }
-  button:disabled { cursor: not-allowed; opacity: 0.6; }
-  table { width: 100%; border-collapse: collapse; font-size: 13px; }
-  th, td { border-bottom: 1px solid #eee; padding: 6px 8px; text-align: left; vertical-align: middle; }
-  th { background: #fafafa; }
-  .nowrap { white-space: nowrap; }
-  .url-cell { max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .badge { padding: 2px 8px; border-radius: 3px; font-size: 12px; }
-  .badge-never { background: #eee; color: #666; }
-  .badge-ok    { background: #e8f5e9; color: #2e7d32; }
-  .badge-error { background: #ffebee; color: #b71c1c; }
-  .err-detail  { color: #b71c1c; cursor: help; margin-left: 4px; }
-  .row-error td { background: #fff8f8; }
-  .empty { color: #999; text-align: center; padding: 16px; }
-  .message.err { color: #b71c1c; margin: 8px 0 0; }
-</style>
+<ContextMenu bind:this={menu} />
