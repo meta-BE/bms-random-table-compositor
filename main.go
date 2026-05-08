@@ -15,6 +15,10 @@ import (
 //go:embed all:frontend/dist
 var assets embed.FS
 
+// version はビルド時に -ldflags "-X main.version=..." で注入される。
+// 未注入の場合 (例: wails dev) は "dev" のまま。
+var version = "dev"
+
 func main() {
 	services, err := appinternal.Bootstrap()
 	if err != nil {
@@ -34,7 +38,7 @@ func main() {
 	go tr.Run(nil)
 
 	if err := wails.Run(&options.App{
-		Title:  "BMS Random Table Compositor",
+		Title:  "BMS Random Table Compositor " + version,
 		Width:  900,
 		Height: 600,
 		AssetServer: &assetserver.Options{

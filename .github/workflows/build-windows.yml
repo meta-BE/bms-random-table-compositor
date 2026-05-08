@@ -34,7 +34,9 @@ jobs:
 
       - name: Wails build (windows/amd64)
         shell: pwsh
-        run: wails build -platform windows/amd64
+        # tag push で起動するため github.ref_name は v0.x.y 形式の tag 名。
+        # main.version に注入してタイトルバー等に反映する。
+        run: wails build -platform windows/amd64 -ldflags "-X main.version=${{ github.ref_name }}"
 
       # Wails の Windows ビルドはディレクトリ名を exe 名に使う場合があるため、
       # 一律でリネームしてから ZIP 化する (POC の知見)

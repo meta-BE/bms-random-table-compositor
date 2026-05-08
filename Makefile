@@ -1,13 +1,17 @@
 .PHONY: dev build build-windows test vet fmt-check lint clean
 
+# 直近の tag 由来のバージョン文字列。tag が無ければ短縮ハッシュ、汚れていれば -dirty。
+VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+LDFLAGS := -X main.version=$(VERSION)
+
 dev:
 	wails dev
 
 build:
-	wails build
+	wails build -ldflags "$(LDFLAGS)"
 
 build-windows:
-	wails build -platform windows/amd64
+	wails build -platform windows/amd64 -ldflags "$(LDFLAGS)"
 
 test:
 	go test ./...
