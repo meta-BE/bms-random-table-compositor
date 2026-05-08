@@ -1,7 +1,15 @@
 .PHONY: dev build build-windows test vet fmt-check lint clean
 
-# 直近の tag 由来のバージョン文字列。tag が無ければ短縮ハッシュ、汚れていれば -dirty。
-VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+# HEAD が tag を指していれば semver 順最新を採用する。
+# (lightweight tag を同一 commit に複数付けると git describe がタイ解決で古い方を返すため)
+# tag が無ければ git describe で `<tag>-<n>-g<hash>` 形式、汚れていれば -dirty を付ける。
+VERSION := $(shell \
+	T=$$(git tag --points-at HEAD --sort=-version:refname 2>/dev/null | head -1); \
+	if [ -n "$$T" ]; then \
+		if [ -n "$$(git status --porcelain 2>/dev/null)" ]; then echo "$$T-dirty"; else echo "$$T"; fi; \
+	else \
+		git describe --tags --always --dirty 2>/dev/null || echo dev; \
+	fi)
 LDFLAGS := -X main.version=$(VERSION)
 
 dev:
@@ -48,7 +56,8 @@ _release:
 		git log origin/main..HEAD --oneline; \
 		echo ""; \
 	fi
-	@LATEST=$$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0"); \
+	@LATEST=$$(git tag --list 'v*' --sort=-version:refname 2>/dev/null | head -1); \
+	LATEST=$${LATEST:-v0.0.0}; \
 	MAJOR=$$(echo $$LATEST | sed 's/^v//' | cut -d. -f1); \
 	MINOR=$$(echo $$LATEST | sed 's/^v//' | cut -d. -f2); \
 	PATCH=$$(echo $$LATEST | sed 's/^v//' | cut -d. -f3); \
