@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"github.com/meta-BE/bms-random-table-compositor/internal/adapter/clock"
 	"github.com/meta-BE/bms-random-table-compositor/internal/adapter/persistence"
@@ -117,7 +116,3 @@ func TestSongdataAttacher_ReAttach(t *testing.T) {
 	require.True(t, a.IsAttached())
 	require.Equal(t, first, a.Status().SongCount)
 }
-
-// time パッケージは time.Time 型のゼロ値参照等で使うが、直接呼び出しはしない。
-// ただしコンパイラの unused import エラー回避のため明示的に参照する。
-var _ = time.Time{}
