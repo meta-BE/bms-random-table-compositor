@@ -2,10 +2,18 @@ package httpserver_test
 
 import (
 	"context"
+	"io"
+	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"testing"
+	"time"
 
+	"github.com/meta-BE/bms-random-table-compositor/internal/adapter/httpserver"
 	"github.com/meta-BE/bms-random-table-compositor/internal/domain"
+	"github.com/meta-BE/bms-random-table-compositor/internal/port"
+	"github.com/meta-BE/bms-random-table-compositor/internal/usecase"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -46,4 +54,51 @@ func TestHandlerHTML_SourceNotFetchedReturns503(t *testing.T) {
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	require.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
+}
+
+func TestHTMLHandler_OwnedOnlyFalse_StillColorsByOwnedSet(t *testing.T) {
+	fx := newHTTPFixture(t)
+	owned := newPrimedOwnedCache(t, []string{"ownedmd5"})
+
+	mux := httpserver.NewMux(httpserver.Deps{
+		Pick:  fx.pickUC,
+		Pub:   fx.pubUC,
+		Owned: owned,
+		Log:   slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+
+	srcID := "01J0SRC000000000000000000A"
+	_, err := fx.srcRepo.Create(context.Background(), domain.SourceTable{
+		ID: srcID, InputURL: "https://example.com/t.html",
+		InputKind: domain.InputKindHTML, DisplayName: "T", Name: "T",
+		LevelOrder: []string{"sl0"}, LastFetchStatus: domain.FetchStatusOK,
+	})
+	require.NoError(t, err)
+	require.NoError(t, fx.srcRepo.SaveFetched(context.Background(), srcID, port.FetchedTable{
+		Header: domain.BMSTableHeader{Name: "T", LevelOrder: []string{"sl0"}},
+		Charts: []domain.SourceChart{
+			{Position: 0, MD5: "ownedmd5", Level: "sl0", Title: "owned-song", Raw: map[string]any{"md5": "ownedmd5"}},
+			{Position: 1, MD5: "othermd5", Level: "sl0", Title: "other-song", Raw: map[string]any{"md5": "othermd5"}},
+		},
+	}, time.Now()))
+
+	pubID, err := fx.pubUC.Create(context.Background(), usecase.CreatePublishedTableInput{
+		Slug: "t", DisplayName: "T", Symbol: "sl",
+		SourceTableID: srcID, OwnedOnly: false, RefreshMode: domain.RefreshModePerRequest,
+	})
+	require.NoError(t, err)
+	_ = pubID
+
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	resp, err2 := http.Get(srv.URL + "/t")
+	require.NoError(t, err2)
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+
+	bodyStr := string(body)
+	assert.Contains(t, bodyStr, "owned-song")
+	assert.Contains(t, bodyStr, "other-song")
+	assert.Contains(t, bodyStr, `class="owned"`)
+	assert.Contains(t, bodyStr, `class="unowned"`)
 }

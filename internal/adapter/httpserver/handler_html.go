@@ -54,10 +54,17 @@ func newHTMLHandler(deps Deps) http.HandlerFunc {
 
 // buildHTMLPageData はピック結果をテンプレ向けに整形する。
 // PickBySlug は OwnedOnly=true 時に既に所持絞り込み済みなので、ここで再 fetch するのは
-// 「未絞り込み」の場合に色分けするため。Plan 3 では Deps に owned cache を流していないので、
-// MVP として OwnedOnly=true 時は全 owned、false 時は全 unowned 表示とする。
+// OwnedOnly=false の「未絞り込み」の場合に色分けするため。
 func buildHTMLPageData(ctx context.Context, deps Deps, pub domain.PublishedTable, r domain.PickResult) htmlPageData {
 	ownedSet := map[string]struct{}{}
+	if deps.Owned != nil {
+		got, err := deps.Owned.Get(ctx)
+		if err != nil {
+			deps.Log.Warn("owned md5 cache fetch failed in html view", "err", err, "slug", pub.Slug)
+		} else {
+			ownedSet = got
+		}
+	}
 
 	levels := make([]htmlLevel, 0, len(r.LevelOrder))
 	for _, level := range r.LevelOrder {
