@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, onDestroy } from 'svelte';
+  import { ClipboardSetText } from '../../../wailsjs/runtime/runtime';
   import { api, type PublishedTableDTO, type SourceTableDTO, type RefreshMode, type ServerConfig } from '../api';
   import { confirm } from '../components/confirm';
   import ContextMenu, { type MenuItem } from '../components/ContextMenu.svelte';
@@ -31,6 +32,21 @@
   let serverPort = 50000;
 
   let menu: ContextMenu;
+
+  let toastMsg = '';
+  let toastKind: 'success' | 'error' = 'success';
+  let toastTimer: ReturnType<typeof setTimeout> | undefined;
+
+  function showToast(msg: string, kind: 'success' | 'error' = 'success') {
+    toastMsg = msg;
+    toastKind = kind;
+    if (toastTimer) clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { toastMsg = ''; }, 2500);
+  }
+
+  onDestroy(() => {
+    if (toastTimer) clearTimeout(toastTimer);
+  });
 
   onMount(async () => {
     await Promise.all([reload(), loadSources(), loadServerCfg()]);
@@ -164,6 +180,17 @@
     try { await api.openPublishedTableURL(row.slug, serverPort); } catch (e) { console.warn(e); }
   }
 
+  async function copyURL(row: PublishedTableDTO) {
+    const url = `http://127.0.0.1:${serverPort}/${row.slug}`;
+    try {
+      await ClipboardSetText(url);
+      showToast(`「${row.displayName}」のURLをコピーしました`, 'success');
+    } catch (e) {
+      console.warn(e);
+      showToast('URLのコピーに失敗しました', 'error');
+    }
+  }
+
   async function manualRefresh(row: PublishedTableDTO) {
     try { await api.manualRefreshPick(row.id); } catch (e) { console.warn(e); }
   }
@@ -172,6 +199,7 @@
     const items: MenuItem[] = [
       { label: '編集', onClick: () => openEdit(row) },
       { label: 'ブラウザで開く', onClick: () => void openInBrowser(row) },
+      { label: 'URLをコピー', onClick: () => void copyURL(row) },
       { label: '再ピック', disabled: row.refreshMode !== 'manual', onClick: () => void manualRefresh(row) },
       { label: '削除', danger: true, onClick: () => void remove(row) },
     ];
@@ -224,7 +252,11 @@
                 {@const src = sources.find((s) => s.id === row.sourceTableId)}
                 <tr on:contextmenu={(e) => onRowContextMenu(e, row)}>
                   <td>{row.displayName}</td>
-                  <td class="font-mono text-xs">{row.slug}</td>
+                  <td
+                    class="font-mono text-xs cursor-pointer hover:bg-base-200"
+                    title="クリックでURLをコピー"
+                    on:click={() => copyURL(row)}
+                  >{row.slug}</td>
                   <td>{row.symbol}</td>
                   <td class="text-xs">{src?.displayName || src?.name || '(削除済み)'}</td>
                   <td>{row.ownedOnly ? '有' : '無'}</td>
@@ -315,3 +347,11 @@
 {/if}
 
 <ContextMenu bind:this={menu} />
+
+{#if toastMsg}
+  <div class="toast toast-center toast-bottom z-50">
+    <div class="alert {toastKind === 'success' ? 'bg-primary text-primary-content' : 'bg-error text-error-content'}">
+      <span>{toastMsg}</span>
+    </div>
+  </div>
+{/if}
