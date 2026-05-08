@@ -1,4 +1,7 @@
-//go:build !darwin
+//go:build !darwin && !windows
+
+// Linux 等の非 Windows / 非 darwin 向けアイコン定義 (PNG)。
+// Windows は ICO が必要なため icons_windows.go で別途 embed する。
 
 package tray
 
