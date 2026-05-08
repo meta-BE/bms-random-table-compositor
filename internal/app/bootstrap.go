@@ -39,6 +39,7 @@ type Services struct {
 	ServerUseCase         *usecase.ServerUseCase
 	PickResultStore       *usecase.PickResultStore
 	DashboardUseCase      *usecase.DashboardUseCase
+	SongdataAttacher      *persistence.SongdataAttacher
 }
 
 // Bootstrap は Services を構築する（DB接続・マイグレーション・ロガー・各UseCase初期化）。
@@ -67,6 +68,8 @@ func Bootstrap() (*Services, error) {
 		_ = closeLog()
 		return nil, fmt.Errorf("db open: %w", err)
 	}
+	// ATTACH DATABASE はコネクション単位なので 1 接続に固定する
+	db.SetMaxOpenConns(1)
 	if err := persistence.RunMigrations(db); err != nil {
 		_ = db.Close()
 		_ = closeLog()
@@ -80,6 +83,21 @@ func Bootstrap() (*Services, error) {
 
 	systemClock := clock.System{}
 	sourceAttacher := persistence.NewSongdataAttacher(db, systemClock, lg)
+
+	// 起動時に songdata.db が設定済みなら ATTACH を試みる (失敗しても起動継続)
+	{
+		bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		configuredPath, _, cfgErr := configStore.Get(bgCtx, "songdata_db_path")
+		if cfgErr != nil {
+			lg.Warn("read songdata_db_path failed", "err", cfgErr)
+		} else if configuredPath != "" {
+			if attachErr := sourceAttacher.Attach(bgCtx, configuredPath); attachErr != nil {
+				lg.Warn("startup songdata attach failed", "err", attachErr, "path", configuredPath)
+			}
+		}
+		cancel()
+	}
+
 	sourceRepo := persistence.NewSourceTableRepoSQL(db, sourceAttacher)
 	httpClient := &http.Client{Timeout: 30 * time.Second}
 	fetcher := gateway.NewBMSTableFetcher(httpClient, lg)
@@ -116,9 +134,19 @@ func Bootstrap() (*Services, error) {
 	pickHandler := handler.NewPickHandler(pickUC)
 	ownedHandler := handler.NewOwnedChartHandler(ownedCache)
 
-	// songdata_db_path 変更時に owned cache を invalidate + ピックキャッシュを clear
+	// songdata_db_path 変更時に sd を再アタッチ + ピックキャッシュを clear
 	configUC.AddSongdataPathChangeHook(func() {
-		ownedCache.Invalidate()
+		bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		newPath, err := configUC.GetSongdataDBPath(bgCtx)
+		if err != nil {
+			lg.Warn("get songdata_db_path failed", "err", err)
+			return
+		}
+		if err := sourceAttacher.ReAttach(bgCtx, newPath); err != nil {
+			lg.Warn("re-attach songdata failed", "err", err, "path", newPath)
+		}
+		ownedCache.Invalidate() // 旧 owned cache 経路 (Task 8 で削除)
 		pickUC.InvalidateAll()
 	})
 
@@ -151,6 +179,7 @@ func Bootstrap() (*Services, error) {
 		ServerUseCase:         serverUC,
 		PickResultStore:       pickStore,
 		DashboardUseCase:      dashboardUC,
+		SongdataAttacher:      sourceAttacher,
 	}, nil
 }
 
