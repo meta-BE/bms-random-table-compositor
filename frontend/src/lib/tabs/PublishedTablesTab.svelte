@@ -1,312 +1,316 @@
 <script lang="ts">
-  import { onMount, onDestroy } from 'svelte';
-  import {
-    api,
-    type PublishedTableDTO,
-    type CreatePublishedTableRequest,
-    type UpdatePublishedTableRequest,
-    type SourceTableDTO,
-    type ServerStatusDTO,
-    type SlugValidation,
-  } from '../api';
+  import { onMount } from 'svelte';
+  import { api, type PublishedTableDTO, type SourceTableDTO, type RefreshMode, type ServerConfig } from '../api';
+  import { confirm } from '../components/confirm';
+  import ContextMenu, { type MenuItem } from '../components/ContextMenu.svelte';
+
+  type FormMode = 'create' | { kind: 'edit'; id: string };
 
   let rows: PublishedTableDTO[] = [];
   let sources: SourceTableDTO[] = [];
-  let serverStatus: ServerStatusDTO | null = null;
+  let loading = true;
   let listError = '';
+
+  let formMode: FormMode = 'create';
+  let formOpen = false;
+  let form = {
+    slug: '',
+    displayName: '',
+    symbol: '',
+    sourceTableId: '',
+    ownedOnly: false,
+    pickPerLevel: 0,
+    refreshMode: 'per_request' as RefreshMode,
+    sortOrder: 0,
+  };
   let formError = '';
-  let formMode: 'closed' | 'create' | 'edit' = 'closed';
-  let editingId: string = '';
-  let busy = false;
-  let unsubscribeStatus: (() => void) | null = null;
+  let saving = false;
+  let slugStatus: 'idle' | 'ok' | 'invalid_format' | 'reserved' | 'duplicate' = 'idle';
+  let slugDirty = false;
 
-  // フォーム状態
-  let f = blankForm();
-  let slugValidation: SlugValidation = { ok: true };
-  let slugTimer: ReturnType<typeof setTimeout> | null = null;
+  let serverPort = 50000;
 
-  function blankForm(): CreatePublishedTableRequest {
-    return {
-      slug: '',
-      displayName: '',
-      symbol: '',
-      sourceTableId: '',
-      ownedOnly: false,
-      pickPerLevel: 0,
-      refreshMode: 'per_request',
-    };
-  }
+  let menu: ContextMenu;
 
-  async function load() {
+  onMount(async () => {
+    await Promise.all([reload(), loadSources(), loadServerCfg()]);
+  });
+
+  async function reload() {
+    loading = true;
     listError = '';
     try {
       rows = await api.listPublishedTables();
-      sources = await api.listSourceTables();
-      serverStatus = await api.getServerStatus();
-    } catch (e: any) {
-      listError = `読み込みエラー: ${String(e)}`;
+    } catch (e) {
+      listError = (e as Error).message;
+    } finally {
+      loading = false;
     }
+  }
+
+  async function loadSources() {
+    try { sources = await api.listSourceTables(); } catch (e) { console.warn(e); }
+  }
+
+  async function loadServerCfg() {
+    try {
+      const cfg: ServerConfig = await api.getServerConfig();
+      serverPort = cfg.port;
+    } catch (e) { console.warn(e); }
   }
 
   function openCreate() {
     formMode = 'create';
-    editingId = '';
-    f = blankForm();
+    form = {
+      slug: '', displayName: '', symbol: '', sourceTableId: sources[0]?.id ?? '',
+      ownedOnly: false, pickPerLevel: 0, refreshMode: 'per_request', sortOrder: 0,
+    };
+    slugStatus = 'idle';
+    slugDirty = false;
     formError = '';
-    slugValidation = { ok: true };
+    formOpen = true;
   }
 
   function openEdit(row: PublishedTableDTO) {
-    formMode = 'edit';
-    editingId = row.id;
-    f = {
-      slug: row.slug,
-      displayName: row.displayName,
-      symbol: row.symbol,
-      sourceTableId: row.sourceTableId,
-      ownedOnly: row.ownedOnly,
-      pickPerLevel: row.pickPerLevel,
-      refreshMode: row.refreshMode,
-    };
+    formMode = { kind: 'edit', id: row.id };
+    form = { ...row };
+    slugStatus = 'idle';
+    slugDirty = true;
     formError = '';
-    slugValidation = { ok: true };
+    formOpen = true;
   }
 
   function closeForm() {
-    formMode = 'closed';
-    editingId = '';
-    formError = '';
-  }
-
-  function debounceValidateSlug() {
-    if (slugTimer) clearTimeout(slugTimer);
-    slugTimer = setTimeout(async () => {
-      if (!f.slug) {
-        slugValidation = { ok: false, reason: 'invalid_format' };
-        return;
-      }
-      try {
-        slugValidation = await api.validateSlug(f.slug, editingId);
-      } catch (e: any) {
-        slugValidation = { ok: false, reason: String(e) };
-      }
-    }, 300);
+    formOpen = false;
   }
 
   async function suggestSlug() {
-    if (!f.sourceTableId) return;
+    if (!form.sourceTableId) return;
     try {
-      f.slug = await api.suggestSlugFromSource(f.sourceTableId);
-      debounceValidateSlug();
-    } catch (e: any) {
-      formError = `slug 候補の生成に失敗: ${String(e)}`;
+      const s = await api.suggestSlugFromSource(form.sourceTableId);
+      form.slug = s;
+      slugDirty = true;
+      await checkSlug();
+    } catch (e) { console.warn(e); }
+  }
+
+  async function checkSlug() {
+    if (!form.slug) { slugStatus = 'idle'; return; }
+    try {
+      const excludeId = formMode === 'create' ? '' : formMode.id;
+      const v = await api.validateSlug(form.slug, excludeId);
+      if (v.ok) { slugStatus = 'ok'; }
+      else { slugStatus = (v.reason as typeof slugStatus); }
+    } catch (e) {
+      slugStatus = 'invalid_format';
     }
   }
 
-  async function submitForm() {
+  async function save() {
+    if (!form.displayName.trim()) { formError = '表示名は必須です'; return; }
+    if (!form.sourceTableId) { formError = 'ソース表を選択してください'; return; }
+    if (slugStatus !== 'ok') { formError = 'slug が不正です'; return; }
+    saving = true;
     formError = '';
-    if (!f.displayName) {
-      formError = '表示名は必須です';
-      return;
-    }
-    if (!f.sourceTableId) {
-      formError = 'ソース表を選択してください';
-      return;
-    }
-    if (!slugValidation.ok) {
-      formError = `slug が無効: ${slugValidation.reason}`;
-      return;
-    }
-    busy = true;
     try {
       if (formMode === 'create') {
-        await api.createPublishedTable(f);
-      } else if (formMode === 'edit') {
-        const req: UpdatePublishedTableRequest = { ...f, id: editingId, sortOrder: 0 };
-        await api.updatePublishedTable(req);
+        await api.createPublishedTable({
+          slug: form.slug,
+          displayName: form.displayName,
+          symbol: form.symbol,
+          sourceTableId: form.sourceTableId,
+          ownedOnly: form.ownedOnly,
+          pickPerLevel: form.pickPerLevel,
+          refreshMode: form.refreshMode,
+        });
+      } else {
+        await api.updatePublishedTable({
+          id: formMode.id,
+          slug: form.slug,
+          displayName: form.displayName,
+          symbol: form.symbol,
+          sourceTableId: form.sourceTableId,
+          ownedOnly: form.ownedOnly,
+          pickPerLevel: form.pickPerLevel,
+          refreshMode: form.refreshMode,
+          sortOrder: form.sortOrder,
+        });
       }
-      closeForm();
-      await load();
-    } catch (e: any) {
-      formError = String(e);
+      formOpen = false;
+      await reload();
+    } catch (e) {
+      formError = (e as Error).message;
     } finally {
-      busy = false;
+      saving = false;
     }
   }
 
-  async function remove(id: string) {
-    // Plan 2 lessons: window.confirm は Wails WebView で機能しないため即削除
-    busy = true;
+  async function remove(row: PublishedTableDTO) {
+    const ok = await confirm({
+      title: '公開表を削除',
+      message: `公開表「${row.displayName}」(slug: ${row.slug}) を削除します。続行しますか？`,
+      confirmLabel: '削除',
+      danger: true,
+    });
+    if (!ok) return;
     try {
-      await api.deletePublishedTable(id);
-      await load();
-    } catch (e: any) {
-      listError = String(e);
-    } finally {
-      busy = false;
-    }
+      await api.deletePublishedTable(row.id);
+      await reload();
+    } catch (e) { console.warn(e); }
   }
 
-  async function manualRefresh(id: string) {
-    busy = true;
-    try {
-      await api.manualRefreshPick(id);
-    } catch (e: any) {
-      listError = String(e);
-    } finally {
-      busy = false;
-    }
+  async function openInBrowser(row: PublishedTableDTO) {
+    try { await api.openPublishedTableURL(row.slug, serverPort); } catch (e) { console.warn(e); }
   }
 
-  async function openInBrowser(slug: string) {
-    if (!serverStatus || serverStatus.state !== 'running') {
-      listError = 'サーバが起動していません';
-      return;
-    }
-    try {
-      await api.openPublishedTableURL(slug, serverStatus.port);
-    } catch (e: any) {
-      listError = String(e);
-    }
+  async function manualRefresh(row: PublishedTableDTO) {
+    try { await api.manualRefreshPick(row.id); } catch (e) { console.warn(e); }
   }
 
-  function sourceLabel(id: string): string {
-    const s = sources.find((x) => x.id === id);
-    if (!s) return id;
-    const name = s.displayName || s.name || s.inputUrl;
-    if (s.lastFetchStatus === 'never') return `${name} (未取得)`;
-    return name;
+  function onRowContextMenu(e: MouseEvent, row: PublishedTableDTO) {
+    const items: MenuItem[] = [
+      { label: '編集', onClick: () => openEdit(row) },
+      { label: 'ブラウザで開く', onClick: () => void openInBrowser(row) },
+      { label: '再ピック', disabled: row.refreshMode !== 'manual', onClick: () => void manualRefresh(row) },
+      { label: '削除', danger: true, onClick: () => void remove(row) },
+    ];
+    menu.open(e, items);
   }
 
-  onMount(() => {
-    load();
-    unsubscribeStatus = api.onServerStatusChanged((s) => (serverStatus = s));
-  });
-
-  onDestroy(() => {
-    if (unsubscribeStatus) unsubscribeStatus();
-    if (slugTimer) clearTimeout(slugTimer);
-  });
+  function modeLabel(m: RefreshMode): string {
+    return m === 'per_request' ? 'リクエスト毎' : m === 'daily' ? '日次' : '手動';
+  }
 </script>
 
-<section class="tab">
-  <h2>公開表</h2>
+<section class="p-4 space-y-4">
+  <div class="flex items-center justify-between">
+    <h2 class="text-base font-semibold">公開表</h2>
+    <button class="btn btn-primary btn-sm" on:click={openCreate} disabled={sources.length === 0}>新規作成</button>
+  </div>
 
-  {#if listError}
-    <div class="error">{listError}</div>
+  {#if sources.length === 0}
+    <div class="alert alert-warning text-sm">公開表を作成するには、まず「ソース表」タブでソース表を 1 つ以上登録してください。</div>
   {/if}
 
-  {#if formMode === 'closed'}
-    <button class="primary" on:click={openCreate} disabled={busy}>+ 公開表を追加</button>
-  {/if}
-
-  {#if formMode !== 'closed'}
-    <div class="form">
-      <h3>{formMode === 'create' ? '公開表を追加' : '公開表を編集'}</h3>
-      <label>
-        表示名
-        <input type="text" bind:value={f.displayName} />
-      </label>
-      <label>
-        ソース表
-        <select bind:value={f.sourceTableId}>
-          <option value="">— 選択 —</option>
-          {#each sources as s}
-            <option value={s.id}>{sourceLabel(s.id)}</option>
-          {/each}
-        </select>
-      </label>
-      <label>
-        Slug
-        <span class="slug-row">
-          <input type="text" bind:value={f.slug} on:input={debounceValidateSlug} />
-          <button type="button" on:click={suggestSlug} disabled={!f.sourceTableId}>ソース表名から生成</button>
-        </span>
-        {#if !slugValidation.ok}
-          <span class="slug-err">slug が無効: {slugValidation.reason}</span>
-        {/if}
-      </label>
-      <label>
-        Symbol
-        <input type="text" bind:value={f.symbol} />
-      </label>
-      <label class="checkbox">
-        <input type="checkbox" bind:checked={f.ownedOnly} />
-        所持譜面のみ表示する
-      </label>
-      <label>
-        レベルあたりの最大曲数 (0 = 無制限)
-        <input type="number" min="0" bind:value={f.pickPerLevel} />
-      </label>
-      <label>
-        ピック更新モード
-        <select bind:value={f.refreshMode}>
-          <option value="per_request">per_request (アクセス毎)</option>
-          <option value="daily">daily (1 日 1 回)</option>
-          <option value="manual">manual (手動)</option>
-        </select>
-      </label>
-      {#if formError}
-        <div class="error">{formError}</div>
+  <div class="card bg-base-100 shadow-sm border border-base-200">
+    <div class="card-body">
+      {#if loading}
+        <div class="flex items-center gap-2 text-sm py-4">
+          <span class="loading loading-spinner loading-sm"></span>
+          <span>読み込み中…</span>
+        </div>
+      {:else if listError}
+        <div class="alert alert-error text-sm">{listError}</div>
+      {:else if rows.length === 0}
+        <div class="text-sm opacity-70 py-4">公開表がまだ作成されていません。「新規作成」から始めてください。</div>
+      {:else}
+        <div class="overflow-x-auto">
+          <table class="table table-sm table-zebra">
+            <thead>
+              <tr>
+                <th>表示名</th>
+                <th>slug</th>
+                <th>シンボル</th>
+                <th>ソース表</th>
+                <th>所持絞り込み</th>
+                <th>件数/レベル</th>
+                <th>更新</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {#each rows as row (row.id)}
+                {@const src = sources.find((s) => s.id === row.sourceTableId)}
+                <tr on:contextmenu={(e) => onRowContextMenu(e, row)}>
+                  <td>{row.displayName}</td>
+                  <td class="font-mono text-xs">{row.slug}</td>
+                  <td>{row.symbol}</td>
+                  <td class="text-xs">{src?.displayName || src?.name || '(削除済み)'}</td>
+                  <td>{row.ownedOnly ? '有' : '無'}</td>
+                  <td>{row.pickPerLevel === 0 ? '無制限' : row.pickPerLevel}</td>
+                  <td><span class="badge badge-ghost">{modeLabel(row.refreshMode)}</span></td>
+                  <td class="whitespace-nowrap">
+                    <button class="btn btn-xs" on:click={() => openInBrowser(row)}>開く</button>
+                    <button class="btn btn-xs" on:click={() => openEdit(row)}>編集</button>
+                    <button class="btn btn-xs btn-error btn-outline" on:click={() => remove(row)}>削除</button>
+                  </td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
       {/if}
-      <div class="actions">
-        <button on:click={submitForm} disabled={busy}>保存</button>
-        <button on:click={closeForm} disabled={busy}>キャンセル</button>
-      </div>
     </div>
-  {/if}
-
-  {#if rows.length === 0}
-    <p class="empty">公開表が登録されていません。</p>
-  {:else}
-    <table>
-      <thead>
-        <tr><th>表示名</th><th>Slug</th><th>ソース表</th><th>所持限定</th><th>各レベル</th><th>モード</th><th></th></tr>
-      </thead>
-      <tbody>
-        {#each rows as row}
-          <tr>
-            <td>{row.displayName}</td>
-            <td><code>/{row.slug}</code></td>
-            <td>{sourceLabel(row.sourceTableId)}</td>
-            <td>{row.ownedOnly ? '✓' : ''}</td>
-            <td>{row.pickPerLevel === 0 ? '無制限' : row.pickPerLevel}</td>
-            <td>{row.refreshMode}</td>
-            <td class="ops">
-              <button on:click={() => openInBrowser(row.slug)} disabled={busy}>開く</button>
-              <button on:click={() => openEdit(row)} disabled={busy}>編集</button>
-              {#if row.refreshMode === 'manual'}
-                <button on:click={() => manualRefresh(row.id)} disabled={busy}>再ピック</button>
-              {/if}
-              <button class="danger" on:click={() => remove(row.id)} disabled={busy}>削除</button>
-            </td>
-          </tr>
-        {/each}
-      </tbody>
-    </table>
-  {/if}
+  </div>
 </section>
 
-<style>
-  .tab { padding: 12px 16px; }
-  h2 { margin: 0 0 12px; font-size: 16px; }
-  .error { color: #b00020; margin: 8px 0; }
-  .empty { color: #999; }
-  .form { border: 1px solid #ccc; padding: 12px; margin: 12px 0; background: #fafafa; }
-  .form h3 { margin: 0 0 8px; font-size: 14px; }
-  .form label { display: block; margin: 6px 0; font-size: 13px; }
-  .form label.checkbox { display: flex; align-items: center; gap: 6px; }
-  .form input[type="text"], .form select, .form input[type="number"] {
-    width: 100%; box-sizing: border-box; padding: 4px 6px; font-size: 13px;
-  }
-  .slug-row { display: flex; gap: 6px; }
-  .slug-row input { flex: 1; }
-  .slug-err { color: #b00020; font-size: 12px; }
-  .actions { display: flex; gap: 6px; margin-top: 8px; }
-  table { width: 100%; border-collapse: collapse; font-size: 13px; }
-  th, td { padding: 4px 8px; border-bottom: 1px solid #eee; text-align: left; }
-  td.ops { display: flex; gap: 4px; }
-  button { padding: 3px 8px; cursor: pointer; }
-  button.primary { background: #1b2636; color: #fff; padding: 6px 12px; }
-  button.danger { color: #b00020; }
-</style>
+<!-- 作成 / 編集モーダル -->
+{#if formOpen}
+  <dialog class="modal modal-open">
+    <div class="modal-box max-w-2xl">
+      <h3 class="font-bold text-base">{formMode === 'create' ? '新規公開表' : '公開表を編集'}</h3>
+      <div class="space-y-2 mt-2 text-sm">
+        <label class="form-control">
+          <div class="label py-1"><span class="label-text">表示名</span></div>
+          <input class="input input-bordered input-sm" bind:value={form.displayName} />
+        </label>
+        <label class="form-control">
+          <div class="label py-1"><span class="label-text">slug (URL に使われる)</span></div>
+          <div class="join w-full">
+            <input
+              class="input input-bordered input-sm join-item flex-1"
+              bind:value={form.slug}
+              on:input={() => { slugDirty = true; void checkSlug(); }}
+            />
+            <button class="btn btn-sm join-item" type="button" on:click={suggestSlug}>自動生成</button>
+          </div>
+          {#if slugDirty && slugStatus !== 'idle' && slugStatus !== 'ok'}
+            <div class="text-xs text-error mt-1">
+              {slugStatus === 'invalid_format' ? '形式が不正 (a-z, 0-9, ハイフンのみ、先頭は英数字、最大63文字)' :
+               slugStatus === 'reserved' ? '予約語です' :
+               slugStatus === 'duplicate' ? '既に使われています' : ''}
+            </div>
+          {/if}
+        </label>
+        <label class="form-control">
+          <div class="label py-1"><span class="label-text">シンボル (例: ★, ▲)</span></div>
+          <input class="input input-bordered input-sm w-32" bind:value={form.symbol} />
+        </label>
+        <label class="form-control">
+          <div class="label py-1"><span class="label-text">ソース表</span></div>
+          <select class="select select-bordered select-sm" bind:value={form.sourceTableId}>
+            {#each sources as s}
+              <option value={s.id}>{s.displayName || s.name || s.inputUrl}</option>
+            {/each}
+          </select>
+        </label>
+        <label class="label cursor-pointer justify-start gap-3">
+          <input type="checkbox" class="checkbox checkbox-sm" bind:checked={form.ownedOnly} />
+          <span class="label-text">所持譜面のみ表示</span>
+        </label>
+        <label class="form-control">
+          <div class="label py-1"><span class="label-text">レベル毎の件数 (0=無制限)</span></div>
+          <input class="input input-bordered input-sm w-32" type="number" min="0" bind:value={form.pickPerLevel} />
+        </label>
+        <label class="form-control">
+          <div class="label py-1"><span class="label-text">更新モード</span></div>
+          <select class="select select-bordered select-sm" bind:value={form.refreshMode}>
+            <option value="per_request">リクエスト毎 (毎回再生成)</option>
+            <option value="daily">日次 (同一日付内で固定)</option>
+            <option value="manual">手動 (再ピックボタンまで固定)</option>
+          </select>
+        </label>
+      </div>
+      {#if formError}<div class="alert alert-error text-sm mt-3">{formError}</div>{/if}
+      <div class="modal-action">
+        <button class="btn btn-sm" on:click={closeForm}>キャンセル</button>
+        <button class="btn btn-primary btn-sm" disabled={saving} on:click={save}>
+          {#if saving}<span class="loading loading-spinner loading-xs"></span>{/if}
+          保存
+        </button>
+      </div>
+    </div>
+  </dialog>
+{/if}
+
+<ContextMenu bind:this={menu} />
