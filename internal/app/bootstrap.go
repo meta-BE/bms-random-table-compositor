@@ -87,7 +87,7 @@ func Bootstrap() (*Services, error) {
 	// 起動時に songdata.db が設定済みなら ATTACH を試みる (失敗しても起動継続)
 	{
 		bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		configuredPath, _, cfgErr := configStore.Get(bgCtx, "songdata_db_path")
+		configuredPath, cfgErr := configUC.GetSongdataDBPath(bgCtx)
 		if cfgErr != nil {
 			lg.Warn("read songdata_db_path failed", "err", cfgErr)
 		} else if configuredPath != "" {
