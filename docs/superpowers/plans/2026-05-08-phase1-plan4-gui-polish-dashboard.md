@@ -1280,8 +1280,9 @@ cat frontend/src/lib/tabs/PublishedTablesTab.svelte
   function openEdit(row: PublishedTableDTO) {
     formMode = { kind: 'edit', id: row.id };
     form = { ...row };
-    slugStatus = 'idle';
-    slugDirty = true;  // 既存 slug は valid とみなす
+    // 既存 slug は DB に保存済み = valid とみなす。slug を変更すると on:input で checkSlug が再実行される。
+    slugStatus = 'ok';
+    slugDirty = true;
     formError = '';
     formOpen = true;
   }
