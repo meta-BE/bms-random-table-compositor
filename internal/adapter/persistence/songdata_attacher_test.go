@@ -116,3 +116,18 @@ func TestSongdataAttacher_ReAttach(t *testing.T) {
 	require.True(t, a.IsAttached())
 	require.Equal(t, first, a.Status().SongCount)
 }
+
+func TestSongdataAttacher_Attach_CreatesMD5Index(t *testing.T) {
+	songdataPath := songdataPathOrSkip(t)
+	db := newAttacherTestDB(t)
+	a := newAttacher(t, db)
+	require.NoError(t, a.Attach(context.Background(), songdataPath))
+
+	// アタッチ済み sd 上に複合インデックスが存在することを確認
+	var name string
+	err := db.QueryRowContext(context.Background(),
+		"SELECT name FROM sd.sqlite_master WHERE type='index' AND name='idx_song_md5_sha256'",
+	).Scan(&name)
+	require.NoError(t, err)
+	require.Equal(t, "idx_song_md5_sha256", name)
+}
