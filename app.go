@@ -33,11 +33,33 @@ func (a *App) startup(ctx context.Context) {
 	a.services.PickHandler.SetContext(ctx)
 	a.services.ServerStatusHandler.SetContext(ctx)
 	a.services.OwnedChartHandler.SetContext(ctx)
+	a.services.DashboardHandler.SetContext(ctx)
 	a.services.Logger.Info("wails startup")
 
-	// ServerStatus 変化を Wails event 経由でフロントへ流す
+	// ServerStatus 変化を Wails event 経由でフロントへ流す + トレイ状態を同期
 	a.services.ServerUseCase.OnStatusChange(func(s domain.ServerStatus) {
 		wailsruntime.EventsEmit(ctx, "server_status:changed", s)
+		if a.tray != nil && a.tray.IsRunning() {
+			switch s.State {
+			case domain.ServerStateRunning:
+				a.tray.SetState(tray.StateRunning)
+			case domain.ServerStateError:
+				a.tray.SetState(tray.StateError)
+			default:
+				a.tray.SetState(tray.StateIdle)
+			}
+		}
+	})
+
+	// ダッシュボード event 配信
+	a.services.DashboardUseCase.OnRequest(func(e domain.RequestLogEntry) {
+		wailsruntime.EventsEmit(ctx, "dashboard:request_logged", e)
+	})
+	a.services.DashboardUseCase.OnFetch(func(e domain.FetchLogEntry) {
+		wailsruntime.EventsEmit(ctx, "dashboard:fetch_logged", e)
+	})
+	a.services.DashboardUseCase.OnPickChanged(func(publishedID string) {
+		wailsruntime.EventsEmit(ctx, "dashboard:pick_changed", publishedID)
 	})
 
 	// 起動時のソース表バックグラウンド更新

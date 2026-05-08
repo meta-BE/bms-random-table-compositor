@@ -18,6 +18,7 @@ import (
 	"github.com/meta-BE/bms-random-table-compositor/internal/adapter/persistence"
 	"github.com/meta-BE/bms-random-table-compositor/internal/adapter/randsrc"
 	"github.com/meta-BE/bms-random-table-compositor/internal/app/handler"
+	"github.com/meta-BE/bms-random-table-compositor/internal/domain"
 	"github.com/meta-BE/bms-random-table-compositor/internal/port"
 	"github.com/meta-BE/bms-random-table-compositor/internal/usecase"
 )
@@ -33,8 +34,11 @@ type Services struct {
 	PickHandler           *handler.PickHandler
 	ServerStatusHandler   *handler.ServerStatusHandler
 	OwnedChartHandler     *handler.OwnedChartHandler
+	DashboardHandler      *handler.DashboardHandler
 	SourceTableUseCase    *usecase.SourceTableUseCase
 	ServerUseCase         *usecase.ServerUseCase
+	PickResultStore       *usecase.PickResultStore
+	DashboardUseCase      *usecase.DashboardUseCase
 }
 
 // Bootstrap は Services を構築する（DB接続・マイグレーション・ロガー・各UseCase初期化）。
@@ -89,6 +93,22 @@ func Bootstrap() (*Services, error) {
 	ownedRepo := persistence.NewSongdataReader()
 	ownedCache := usecase.NewOwnedMD5Cache(ownedRepo, configStore, systemClock, lg)
 	pickStore := usecase.NewPickResultStore()
+	dashboardUC := usecase.NewDashboardUseCase(pickStore)
+	dashboardHandler := handler.NewDashboardHandler(dashboardUC)
+
+	// PickResultStore 変化通知 → DashboardUseCase 経由で event 配信ポイントに繋ぐ
+	pickStore.OnChange(func(publishedID string) {
+		dashboardUC.NotifyPickChanged(publishedID)
+	})
+
+	// ソース表 refresh 完了通知 → ダッシュボード履歴へ
+	sourceUC.OnRefreshComplete(func(e usecase.RefreshCompleteEvent) {
+		dashboardUC.AppendFetch(domain.FetchLogEntry{
+			At: e.At, SourceID: e.SourceID, DisplayName: e.DisplayName,
+			Status: e.Status, Error: e.Error,
+		})
+	})
+
 	randFactory := port.RandSourceFactory(func(seed int64) port.RandSource {
 		return randsrc.NewMathRandSource(seed)
 	})
@@ -103,7 +123,13 @@ func Bootstrap() (*Services, error) {
 	})
 
 	httpFactory := func(addr string) usecase.HTTPServer {
-		return httpserver.New(addr, httpserver.Deps{Pick: pickUC, Pub: pubUC, Log: lg})
+		return httpserver.New(addr, httpserver.Deps{
+			Pick:      pickUC,
+			Pub:       pubUC,
+			Owned:     ownedCache,
+			Dashboard: dashboardUC,
+			Log:       lg,
+		})
 	}
 	serverUC := usecase.NewServerUseCase(configStore, httpFactory, lg)
 	serverHandler := handler.NewServerStatusHandler(serverUC)
@@ -120,8 +146,11 @@ func Bootstrap() (*Services, error) {
 		PickHandler:           pickHandler,
 		ServerStatusHandler:   serverHandler,
 		OwnedChartHandler:     ownedHandler,
+		DashboardHandler:      dashboardHandler,
 		SourceTableUseCase:    sourceUC,
 		ServerUseCase:         serverUC,
+		PickResultStore:       pickStore,
+		DashboardUseCase:      dashboardUC,
 	}, nil
 }
 
