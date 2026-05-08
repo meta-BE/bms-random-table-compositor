@@ -54,14 +54,14 @@ func (h *SongdataHandler) GetSongdataAttachStatus() SongdataAttachStatusDTO {
 
 // ReattachSongdata は現在の songdata_db_path 設定で ATTACH をやり直す。
 // GUI の「再アタッチ」ボタンから呼ばれる。
+// ReAttach が失敗してもピックキャッシュは旧アタッチ前提で生成されている可能性が
+// あるため、必ず InvalidateAll を呼ぶ (Bootstrap フックと同じ挙動)。
 func (h *SongdataHandler) ReattachSongdata() error {
 	path, err := h.configUC.GetSongdataDBPath(h.ctx)
 	if err != nil {
 		return err
 	}
-	if err := h.attacher.ReAttach(h.ctx, path); err != nil {
-		return err
-	}
+	reattachErr := h.attacher.ReAttach(h.ctx, path)
 	h.pickUC.InvalidateAll()
-	return nil
+	return reattachErr
 }
