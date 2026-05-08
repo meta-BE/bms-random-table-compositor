@@ -7,6 +7,13 @@ import (
 	"github.com/meta-BE/bms-random-table-compositor/internal/domain"
 )
 
+// ChartQuery は SourceTableRepo.LoadCharts に渡す SQL レベルのフィルタ。
+// IsOwned/LastPlayedAt 等の派生プロパティは戻り値の EnrichedChart に常に含まれる。
+// このフィルタは「DB 段階で足切りしたい場合」だけ指定する (パフォーマンス目的)。
+type ChartQuery struct {
+	OwnedOnly bool // EXISTS sd.song で足切り (未アタッチ時は強制的に空配列を返す)
+}
+
 // SourceTableRepo は source_table / source_table_chart を永続化する。
 type SourceTableRepo interface {
 	List(ctx context.Context) ([]domain.SourceTable, error)
