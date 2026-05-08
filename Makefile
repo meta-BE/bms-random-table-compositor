@@ -1,14 +1,27 @@
 .PHONY: dev build build-windows test vet fmt-check lint clean
 
-# HEAD が tag を指していれば semver 順最新を採用する。
-# (lightweight tag を同一 commit に複数付けると git describe がタイ解決で古い方を返すため)
-# tag が無ければ git describe で `<tag>-<n>-g<hash>` 形式、汚れていれば -dirty を付ける。
+# lightweight tag を同一 commit に複数付けると git describe がタイ解決で古い方を返すため、
+# semver 順 (--sort=-version:refname) で最新タグを明示的に拾う。
+# - HEAD が tag を指していれば: そのまま (例: v0.1.2)
+# - HEAD が tag より先行: <tag>-<n>-g<hash> (例: v0.1.2-3-gabcdef1)
+# - tag が一つも無い: <hash>
+# - 上記すべてに -dirty が付くケースあり
+# - git 不在時のみ "dev"
 VERSION := $(shell \
-	T=$$(git tag --points-at HEAD --sort=-version:refname 2>/dev/null | head -1); \
-	if [ -n "$$T" ]; then \
-		if [ -n "$$(git status --porcelain 2>/dev/null)" ]; then echo "$$T-dirty"; else echo "$$T"; fi; \
+	DIRTY=$$(if [ -n "$$(git status --porcelain 2>/dev/null)" ]; then echo "-dirty"; fi); \
+	T_EXACT=$$(git tag --points-at HEAD --list 'v*' --sort=-version:refname 2>/dev/null | head -1); \
+	if [ -n "$$T_EXACT" ]; then \
+		echo "$$T_EXACT$$DIRTY"; \
 	else \
-		git describe --tags --always --dirty 2>/dev/null || echo dev; \
+		T_BASE=$$(git tag --merged HEAD --list 'v*' --sort=-version:refname 2>/dev/null | head -1); \
+		HASH=$$(git rev-parse --short HEAD 2>/dev/null); \
+		if [ -z "$$HASH" ]; then echo dev; \
+		elif [ -n "$$T_BASE" ]; then \
+			N=$$(git rev-list --count $$T_BASE..HEAD 2>/dev/null); \
+			echo "$$T_BASE-$$N-g$$HASH$$DIRTY"; \
+		else \
+			echo "$$HASH$$DIRTY"; \
+		fi; \
 	fi)
 LDFLAGS := -X main.version=$(VERSION)
 
