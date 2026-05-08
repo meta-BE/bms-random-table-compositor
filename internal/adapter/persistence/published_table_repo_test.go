@@ -3,9 +3,12 @@ package persistence_test
 import (
 	"context"
 	"errors"
+	"io"
+	"log/slog"
 	"path/filepath"
 	"testing"
 
+	"github.com/meta-BE/bms-random-table-compositor/internal/adapter/clock"
 	"github.com/meta-BE/bms-random-table-compositor/internal/adapter/persistence"
 	"github.com/meta-BE/bms-random-table-compositor/internal/domain"
 	"github.com/meta-BE/bms-random-table-compositor/internal/usecase"
@@ -18,8 +21,11 @@ func setupPublishedTableRepo(t *testing.T) (*persistence.PublishedTableRepoSQL, 
 	db, err := persistence.OpenDB(filepath.Join(dir, "test.db"))
 	require.NoError(t, err)
 	t.Cleanup(func() { db.Close() })
+	db.SetMaxOpenConns(1)
 	require.NoError(t, persistence.RunMigrations(db))
-	return persistence.NewPublishedTableRepoSQL(db), persistence.NewSourceTableRepoSQL(db)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	attacher := persistence.NewSongdataAttacher(db, clock.System{}, logger)
+	return persistence.NewPublishedTableRepoSQL(db), persistence.NewSourceTableRepoSQL(db, attacher)
 }
 
 func seedSourceTable(t *testing.T, src *persistence.SourceTableRepoSQL, id string) {

@@ -18,7 +18,6 @@ import (
 type PickUseCase struct {
 	pubRepo port.PublishedTableRepo
 	srcRepo port.SourceTableRepo
-	owned   *OwnedMD5Cache
 	store   *PickResultStore
 	clock   port.Clock
 	randNew port.RandSourceFactory
@@ -29,14 +28,13 @@ type PickUseCase struct {
 func NewPickUseCase(
 	pubRepo port.PublishedTableRepo,
 	srcRepo port.SourceTableRepo,
-	owned *OwnedMD5Cache,
 	store *PickResultStore,
 	clock port.Clock,
 	randNew port.RandSourceFactory,
 	log *slog.Logger,
 ) *PickUseCase {
 	return &PickUseCase{
-		pubRepo: pubRepo, srcRepo: srcRepo, owned: owned, store: store,
+		pubRepo: pubRepo, srcRepo: srcRepo, store: store,
 		clock: clock, randNew: randNew, log: log,
 	}
 }
@@ -109,29 +107,15 @@ func (u *PickUseCase) regenerate(ctx context.Context, pub domain.PublishedTable)
 	if src.LastFetchStatus == domain.FetchStatusNever {
 		return domain.PickResult{}, ErrSourceNotFetched
 	}
-	all, err := u.srcRepo.LoadCharts(ctx, pub.SourceTableID)
+	all, err := u.srcRepo.LoadCharts(ctx, pub.SourceTableID, port.ChartQuery{
+		OwnedOnly: pub.OwnedOnly,
+	})
 	if err != nil {
 		return domain.PickResult{}, fmt.Errorf("load charts %q: %w", pub.SourceTableID, err)
 	}
 
-	// 所持絞り込み（OwnedOnly=true 時）
-	if pub.OwnedOnly {
-		ownedSet, err := u.owned.Get(ctx)
-		if err != nil {
-			u.log.Warn("owned md5 get failed, falling back to empty set", "err", err)
-			ownedSet = map[string]struct{}{}
-		}
-		filtered := make([]domain.SourceChart, 0, len(all))
-		for _, c := range all {
-			if _, ok := ownedSet[c.MD5]; ok {
-				filtered = append(filtered, c)
-			}
-		}
-		all = filtered
-	}
-
 	// レベル別グルーピング
-	byLevel := map[string][]domain.SourceChart{}
+	byLevel := map[string][]domain.EnrichedChart{}
 	for _, c := range all {
 		byLevel[c.Level] = append(byLevel[c.Level], c)
 	}
@@ -162,7 +146,9 @@ func (u *PickUseCase) regenerate(ctx context.Context, pub domain.PublishedTable)
 			charts = charts[:pub.Pick.PerLevel]
 			sort.SliceStable(charts, func(i, j int) bool { return charts[i].Position < charts[j].Position })
 		}
-		finalCharts = append(finalCharts, charts...)
+		for _, ec := range charts {
+			finalCharts = append(finalCharts, ec.SourceChart)
+		}
 		finalLevelOrder = append(finalLevelOrder, level)
 	}
 
@@ -210,7 +196,7 @@ func fnv32(s string) uint32 {
 // 自然順で末尾に並べる。srcOrder が空の場合は全レベルを自然順で並べる。
 // シャッフルループより前にこの順序を確定することで、
 // rng 消費順が Go map の反復順ランダム化に左右されないようにする。
-func buildLevelOrder(srcOrder []string, byLevel map[string][]domain.SourceChart) []string {
+func buildLevelOrder(srcOrder []string, byLevel map[string][]domain.EnrichedChart) []string {
 	if len(srcOrder) == 0 {
 		order := make([]string, 0, len(byLevel))
 		for k := range byLevel {

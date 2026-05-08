@@ -46,20 +46,15 @@ func newHTTPFixture(t *testing.T) *httpFixture {
 	t.Cleanup(func() { db.Close() })
 	require.NoError(t, persistence.RunMigrations(db))
 
-	srcRepo := persistence.NewSourceTableRepoSQL(db)
-	pubRepo := persistence.NewPublishedTableRepoSQL(db)
-	cfgStore := persistence.NewConfigStoreSQL(db)
-	owned := usecase.NewOwnedMD5Cache(
-		persistence.NewSongdataReader(),
-		cfgStore,
-		stubClock{t: time.Date(2026, 5, 7, 12, 0, 0, 0, time.Local)},
-		slog.New(slog.NewTextHandler(io.Discard, nil)),
-	)
-	store := usecase.NewPickResultStore()
+	db.SetMaxOpenConns(1)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	attacher := persistence.NewSongdataAttacher(db, stubClock{t: time.Date(2026, 5, 7, 12, 0, 0, 0, time.Local)}, logger)
+	srcRepo := persistence.NewSourceTableRepoSQL(db, attacher)
+	pubRepo := persistence.NewPublishedTableRepoSQL(db)
+	store := usecase.NewPickResultStore()
 	pubUC := usecase.NewPublishedTableUseCase(pubRepo, srcRepo, &stubIDGen{}, logger)
 	pickUC := usecase.NewPickUseCase(
-		pubRepo, srcRepo, owned, store,
+		pubRepo, srcRepo, store,
 		stubClock{t: time.Date(2026, 5, 7, 12, 0, 0, 0, time.Local)},
 		port.RandSourceFactory(func(seed int64) port.RandSource { return randsrc.NewMathRandSource(seed) }),
 		logger,

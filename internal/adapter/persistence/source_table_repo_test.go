@@ -3,10 +3,13 @@ package persistence_test
 import (
 	"context"
 	"errors"
+	"io"
+	"log/slog"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/meta-BE/bms-random-table-compositor/internal/adapter/clock"
 	"github.com/meta-BE/bms-random-table-compositor/internal/adapter/persistence"
 	"github.com/meta-BE/bms-random-table-compositor/internal/domain"
 	"github.com/meta-BE/bms-random-table-compositor/internal/port"
@@ -19,8 +22,11 @@ func setupSourceTableRepo(t *testing.T) *persistence.SourceTableRepoSQL {
 	db, err := persistence.OpenDB(filepath.Join(dir, "test.db"))
 	require.NoError(t, err)
 	t.Cleanup(func() { db.Close() })
+	db.SetMaxOpenConns(1)
 	require.NoError(t, persistence.RunMigrations(db))
-	return persistence.NewSourceTableRepoSQL(db)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	attacher := persistence.NewSongdataAttacher(db, clock.System{}, logger)
+	return persistence.NewSourceTableRepoSQL(db, attacher)
 }
 
 func TestSourceTableRepoSQL_CreateThenGet(t *testing.T) {
@@ -168,7 +174,7 @@ func TestSourceTableRepoSQL_SaveFetched_ReplacesChartsOnSecondCall(t *testing.T)
 	}
 	require.NoError(t, r.SaveFetched(ctx, "Z", second, time.Now()))
 
-	charts, err := r.LoadCharts(ctx, "Z")
+	charts, err := r.LoadCharts(ctx, "Z", port.ChartQuery{})
 	require.NoError(t, err)
 	require.Len(t, charts, 1)
 	require.Equal(t, "x", charts[0].MD5)
@@ -198,7 +204,7 @@ func TestSourceTableRepoSQL_SaveFetched_NotModifiedKeepsCharts(t *testing.T) {
 	require.Equal(t, domain.FetchStatusOK, got.LastFetchStatus)
 	require.True(t, got.LastFetchedAt.Equal(t1))
 	require.Equal(t, `"v1"`, got.ETag, "ETag は維持される")
-	charts, _ := r.LoadCharts(ctx, "Z")
+	charts, _ := r.LoadCharts(ctx, "Z", port.ChartQuery{})
 	require.Len(t, charts, 1)
 	require.Equal(t, "a", charts[0].MD5)
 }
@@ -225,7 +231,7 @@ func TestSourceTableRepoSQL_MarkFetchError_KeepsPreviousCharts(t *testing.T) {
 	require.Equal(t, "boom", got.LastFetchError)
 	require.True(t, got.LastFetchedAt.Equal(errAt))
 
-	charts, _ := r.LoadCharts(ctx, "Z")
+	charts, _ := r.LoadCharts(ctx, "Z", port.ChartQuery{})
 	require.Len(t, charts, 1, "失敗時もキャッシュは保持される（spec §8）")
 }
 
@@ -248,7 +254,7 @@ func TestSourceTableRepoSQL_LoadCharts_OrderByPosition(t *testing.T) {
 	}
 	require.NoError(t, r.SaveFetched(ctx, "Z", ft, time.Now()))
 
-	out, err := r.LoadCharts(ctx, "Z")
+	out, err := r.LoadCharts(ctx, "Z", port.ChartQuery{})
 	require.NoError(t, err)
 	require.Len(t, out, 3)
 	require.Equal(t, []int{0, 1, 2}, []int{out[0].Position, out[1].Position, out[2].Position})
@@ -259,7 +265,7 @@ func TestSourceTableRepoSQL_LoadCharts_OrderByPosition(t *testing.T) {
 
 func TestSourceTableRepoSQL_LoadCharts_EmptyForNoSource(t *testing.T) {
 	r := setupSourceTableRepo(t)
-	out, err := r.LoadCharts(context.Background(), "missing")
+	out, err := r.LoadCharts(context.Background(), "missing", port.ChartQuery{})
 	require.NoError(t, err)
 	require.Empty(t, out)
 }

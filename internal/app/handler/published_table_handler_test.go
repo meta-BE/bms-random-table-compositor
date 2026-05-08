@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/meta-BE/bms-random-table-compositor/internal/adapter/clock"
 	"github.com/meta-BE/bms-random-table-compositor/internal/adapter/idgen"
 	"github.com/meta-BE/bms-random-table-compositor/internal/adapter/persistence"
 	"github.com/meta-BE/bms-random-table-compositor/internal/app/handler"
@@ -21,10 +22,12 @@ func setupPublishedTableHandler(t *testing.T) (*handler.PublishedTableHandler, *
 	db, err := persistence.OpenDB(filepath.Join(dir, "h.db"))
 	require.NoError(t, err)
 	t.Cleanup(func() { db.Close() })
+	db.SetMaxOpenConns(1)
 	require.NoError(t, persistence.RunMigrations(db))
-	src := persistence.NewSourceTableRepoSQL(db)
-	pub := persistence.NewPublishedTableRepoSQL(db)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	attacher := persistence.NewSongdataAttacher(db, clock.System{}, logger)
+	src := persistence.NewSourceTableRepoSQL(db, attacher)
+	pub := persistence.NewPublishedTableRepoSQL(db)
 	uc := usecase.NewPublishedTableUseCase(pub, src, idgen.NewULID(), logger)
 	h := handler.NewPublishedTableHandler(uc)
 	h.SetContext(context.Background())

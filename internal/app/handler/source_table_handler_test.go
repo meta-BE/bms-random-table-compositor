@@ -66,7 +66,7 @@ func (r *sourceFakeRepo) SaveFetched(_ context.Context, _ string, _ port.Fetched
 func (r *sourceFakeRepo) MarkFetchError(_ context.Context, _ string, _ error, _ time.Time) error {
 	return nil
 }
-func (r *sourceFakeRepo) LoadCharts(_ context.Context, _ string) ([]domain.SourceChart, error) {
+func (r *sourceFakeRepo) LoadCharts(_ context.Context, _ string, _ port.ChartQuery) ([]domain.EnrichedChart, error) {
 	return nil, nil
 }
 

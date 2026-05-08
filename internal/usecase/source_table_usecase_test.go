@@ -19,17 +19,31 @@ import (
 
 // fakeSourceRepo は port.SourceTableRepo のテスト用実装。
 type fakeSourceRepo struct {
-	mu     sync.Mutex
-	rows   map[string]domain.SourceTable
-	charts map[string][]domain.SourceChart
-	saved  map[string]port.FetchedTable
-	errs   map[string]string
+	mu       sync.Mutex
+	rows     map[string]domain.SourceTable
+	charts   map[string][]domain.SourceChart
+	ownedSet map[string]struct{}
+	saved    map[string]port.FetchedTable
+	errs     map[string]string
 }
 
 func newFakeSourceRepo() *fakeSourceRepo {
 	return &fakeSourceRepo{
 		rows: map[string]domain.SourceTable{}, charts: map[string][]domain.SourceChart{},
 		saved: map[string]port.FetchedTable{}, errs: map[string]string{},
+	}
+}
+
+// markOwned は fakeSourceRepo に owned md5 を覚えさせて、LoadCharts で IsOwned を立てる。
+// 実 adapter は SongdataAttacher 経由で SQL JOIN するが、fake では in-memory set で代替する。
+func (r *fakeSourceRepo) markOwned(md5s ...string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.ownedSet == nil {
+		r.ownedSet = map[string]struct{}{}
+	}
+	for _, m := range md5s {
+		r.ownedSet[m] = struct{}{}
 	}
 }
 
@@ -110,10 +124,20 @@ func (r *fakeSourceRepo) MarkFetchError(_ context.Context, id string, e error, a
 	return nil
 }
 
-func (r *fakeSourceRepo) LoadCharts(_ context.Context, id string) ([]domain.SourceChart, error) {
+func (r *fakeSourceRepo) LoadCharts(_ context.Context, id string, q port.ChartQuery) ([]domain.EnrichedChart, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.charts[id], nil
+	src := r.charts[id]
+	out := make([]domain.EnrichedChart, 0, len(src))
+	for _, c := range src {
+		_, owned := r.ownedSet[c.MD5]
+		ec := domain.EnrichedChart{SourceChart: c, IsOwned: owned}
+		if q.OwnedOnly && !owned {
+			continue
+		}
+		out = append(out, ec)
+	}
+	return out, nil
 }
 
 // fakeFetcher は port.SourceTableFetcher のテスト用実装。

@@ -38,14 +38,11 @@ func chartFixture(sourceID, level string, pos int, md5 string) domain.SourceChar
 
 // pickUCFixture は PickUseCase + 各種 fake/in-memory コンポーネントを束ねたテスト fixture。
 type pickUCFixture struct {
-	uc       *usecase.PickUseCase
-	pubRepo  *fakePublishedRepo
-	srcRepo  *fakeSourceRepo
-	owned    *usecase.OwnedMD5Cache
-	ownedRep *fakeOwnedRepo
-	store    *usecase.PickResultStore
-	cfg      *fakeConfigStore
-	clock    *mutableClock
+	uc      *usecase.PickUseCase
+	pubRepo *fakePublishedRepo
+	srcRepo *fakeSourceRepo
+	store   *usecase.PickResultStore
+	clock   *mutableClock
 }
 
 type mutableClock struct{ t time.Time }
@@ -56,14 +53,11 @@ func newPickUCFixture(t *testing.T) *pickUCFixture {
 	t.Helper()
 	pub := newFakePublishedRepo()
 	src := newFakeSourceRepo()
-	repo := &fakeOwnedRepo{resp: map[string]struct{}{}}
-	cfg := newFakeConfigStore()
 	clock := &mutableClock{t: time.Date(2026, 5, 7, 12, 0, 0, 0, time.Local)}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	owned := usecase.NewOwnedMD5Cache(repo, cfg, clock, logger)
 	store := usecase.NewPickResultStore()
-	uc := usecase.NewPickUseCase(pub, src, owned, store, clock, newStubFactory(), logger)
-	return &pickUCFixture{uc: uc, pubRepo: pub, srcRepo: src, owned: owned, ownedRep: repo, store: store, cfg: cfg, clock: clock}
+	uc := usecase.NewPickUseCase(pub, src, store, clock, newStubFactory(), logger)
+	return &pickUCFixture{uc: uc, pubRepo: pub, srcRepo: src, store: store, clock: clock}
 }
 
 func (f *pickUCFixture) seedSource(t *testing.T, id string, levelOrder []string, status domain.FetchStatus, charts []domain.SourceChart) {
@@ -155,8 +149,7 @@ func TestPickUseCase_OwnedOnlyFiltersBeforePick(t *testing.T) {
 		chartFixture("SRC1", "0", 2, "owned-2"),
 	})
 	f.seedPub(t, "PUB1", "p1", "SRC1", true, 0, domain.RefreshModePerRequest)
-	require.NoError(t, f.cfg.Set(context.Background(), "songdata_db_path", "/p"))
-	f.ownedRep.resp = map[string]struct{}{"owned-1": {}, "owned-2": {}}
+	f.srcRepo.markOwned("owned-1", "owned-2")
 
 	r, _, err := f.uc.PickBySlug(context.Background(), "p1")
 	require.NoError(t, err)
@@ -172,7 +165,7 @@ func TestPickUseCase_OwnedOnly_NoOwnedReturnsEmpty(t *testing.T) {
 		chartFixture("SRC1", "0", 0, "x"),
 	})
 	f.seedPub(t, "PUB1", "p1", "SRC1", true, 0, domain.RefreshModePerRequest)
-	require.NoError(t, f.cfg.Set(context.Background(), "songdata_db_path", "/p"))
+	// markOwned は呼ばない → owned セットが空なので 0 件が返る
 
 	r, _, err := f.uc.PickBySlug(context.Background(), "p1")
 	require.NoError(t, err)

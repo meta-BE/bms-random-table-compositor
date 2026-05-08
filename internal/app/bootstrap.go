@@ -78,7 +78,9 @@ func Bootstrap() (*Services, error) {
 	configUC := usecase.NewConfigUseCase(configStore)
 	configHandler := handler.NewConfigHandler(configUC)
 
-	sourceRepo := persistence.NewSourceTableRepoSQL(db)
+	systemClock := clock.System{}
+	sourceAttacher := persistence.NewSongdataAttacher(db, systemClock, lg)
+	sourceRepo := persistence.NewSourceTableRepoSQL(db, sourceAttacher)
 	httpClient := &http.Client{Timeout: 30 * time.Second}
 	fetcher := gateway.NewBMSTableFetcher(httpClient, lg)
 	idGen := idgen.NewULID()
@@ -88,8 +90,6 @@ func Bootstrap() (*Services, error) {
 	pubRepo := persistence.NewPublishedTableRepoSQL(db)
 	pubUC := usecase.NewPublishedTableUseCase(pubRepo, sourceRepo, idGen, lg)
 	pubHandler := handler.NewPublishedTableHandler(pubUC)
-
-	systemClock := clock.System{}
 	ownedRepo := persistence.NewSongdataReader()
 	ownedCache := usecase.NewOwnedMD5Cache(ownedRepo, configStore, systemClock, lg)
 	pickStore := usecase.NewPickResultStore()
@@ -112,7 +112,7 @@ func Bootstrap() (*Services, error) {
 	randFactory := port.RandSourceFactory(func(seed int64) port.RandSource {
 		return randsrc.NewMathRandSource(seed)
 	})
-	pickUC := usecase.NewPickUseCase(pubRepo, sourceRepo, ownedCache, pickStore, systemClock, randFactory, lg)
+	pickUC := usecase.NewPickUseCase(pubRepo, sourceRepo, pickStore, systemClock, randFactory, lg)
 	pickHandler := handler.NewPickHandler(pickUC)
 	ownedHandler := handler.NewOwnedChartHandler(ownedCache)
 

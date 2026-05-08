@@ -28,5 +28,8 @@ type SourceTableRepo interface {
 	// MarkFetchError は取得失敗を記録する（譜面行は触らない）。
 	MarkFetchError(ctx context.Context, sourceID string, fetchErr error, fetchedAt time.Time) error
 	// LoadCharts は source_table_chart を position 昇順で返す。
-	LoadCharts(ctx context.Context, sourceID string) ([]domain.SourceChart, error)
+	// SongdataAttacher で sd がアタッチされている場合は EnrichedChart.IsOwned に
+	// EXISTS sd.song の結果が入り、未アタッチ時は IsOwned=false 一律。
+	// LastPlayedAt は v2 で実装予定 (現状は常に nil)。
+	LoadCharts(ctx context.Context, sourceID string, q ChartQuery) ([]domain.EnrichedChart, error)
 }

@@ -14,12 +14,14 @@ import (
 
 // SourceTableRepoSQL は source_table / source_table_chart を扱う port.SourceTableRepo の実装。
 type SourceTableRepoSQL struct {
-	db *sql.DB
+	db       *sql.DB
+	attacher *SongdataAttacher
 }
 
 // NewSourceTableRepoSQL は新しい SourceTableRepoSQL を作る。
-func NewSourceTableRepoSQL(db *sql.DB) *SourceTableRepoSQL {
-	return &SourceTableRepoSQL{db: db}
+// attacher 経由で songdata.db のアタッチ状態を見て LoadCharts の SQL を切り替える。
+func NewSourceTableRepoSQL(db *sql.DB, attacher *SongdataAttacher) *SourceTableRepoSQL {
+	return &SourceTableRepoSQL{db: db, attacher: attacher}
 }
 
 // Create は SourceTable を新規挿入し、ID を返す。
@@ -254,28 +256,78 @@ func (r *SourceTableRepoSQL) SaveFetched(
 	return tx.Commit()
 }
 
-// LoadCharts は source_table_chart を position 昇順で返す。
-func (r *SourceTableRepoSQL) LoadCharts(ctx context.Context, sourceID string) ([]domain.SourceChart, error) {
-	rows, err := r.db.QueryContext(ctx,
-		`SELECT position, md5, sha256, level, title, artist, raw_json
-		 FROM source_table_chart
-		 WHERE source_id=?
-		 ORDER BY position ASC`,
+// LoadCharts は source_table_chart を position 昇順で EnrichedChart として返す。
+// SongdataAttacher が sd をアタッチ済みなら IsOwned を EXISTS sd.song で計算する。
+// 未アタッチ時は IsOwned=false で返し、q.OwnedOnly=true なら空配列を返す
+// (spec: DB 未設定時は owned_only の表は 0 件)。
+// LastPlayedAt は今回 NULL 固定 (v2 で sd.score を見る形に拡張する)。
+func (r *SourceTableRepoSQL) LoadCharts(
+	ctx context.Context, sourceID string, q port.ChartQuery,
+) ([]domain.EnrichedChart, error) {
+	if r.attacher != nil && r.attacher.IsAttached() {
+		return r.loadChartsAttached(ctx, sourceID, q)
+	}
+	if q.OwnedOnly {
+		return nil, nil
+	}
+	return r.loadChartsBare(ctx, sourceID)
+}
+
+func (r *SourceTableRepoSQL) loadChartsAttached(
+	ctx context.Context, sourceID string, q port.ChartQuery,
+) ([]domain.EnrichedChart, error) {
+	ownedFlag := 0
+	if q.OwnedOnly {
+		ownedFlag = 1
+	}
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT
+		  c.position, c.md5, c.sha256, c.level, c.title, c.artist, c.raw_json,
+		  EXISTS(SELECT 1 FROM sd.song s WHERE s.md5 = c.md5)        AS is_owned,
+		  NULL                                                        AS last_played_at
+		FROM source_table_chart c
+		WHERE c.source_id = ?
+		  AND (? = 0 OR EXISTS (SELECT 1 FROM sd.song s WHERE s.md5 = c.md5))
+		ORDER BY c.position ASC`,
+		sourceID, ownedFlag,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("load enriched charts (attached) %q: %w", sourceID, err)
+	}
+	defer rows.Close()
+	return scanEnrichedRows(rows, sourceID)
+}
+
+func (r *SourceTableRepoSQL) loadChartsBare(
+	ctx context.Context, sourceID string,
+) ([]domain.EnrichedChart, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT c.position, c.md5, c.sha256, c.level, c.title, c.artist, c.raw_json,
+		       0 AS is_owned, NULL AS last_played_at
+		FROM source_table_chart c
+		WHERE c.source_id = ?
+		ORDER BY c.position ASC`,
 		sourceID,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("load charts %q: %w", sourceID, err)
+		return nil, fmt.Errorf("load enriched charts (bare) %q: %w", sourceID, err)
 	}
 	defer rows.Close()
+	return scanEnrichedRows(rows, sourceID)
+}
 
-	var out []domain.SourceChart
+func scanEnrichedRows(rows *sql.Rows, sourceID string) ([]domain.EnrichedChart, error) {
+	var out []domain.EnrichedChart
 	for rows.Next() {
 		var (
-			c       domain.SourceChart
-			rawJSON string
+			c            domain.SourceChart
+			rawJSON      string
+			isOwned      bool
+			lastPlayedAt sql.NullString // 現状は常に NULL、v2 でカラム化予定
 		)
 		if err := rows.Scan(
-			&c.Position, &c.MD5, &c.SHA256, &c.Level, &c.Title, &c.Artist, &rawJSON,
+			&c.Position, &c.MD5, &c.SHA256, &c.Level, &c.Title, &c.Artist,
+			&rawJSON, &isOwned, &lastPlayedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -285,7 +337,10 @@ func (r *SourceTableRepoSQL) LoadCharts(ctx context.Context, sourceID string) ([
 				return nil, fmt.Errorf("unmarshal raw_json[pos=%d]: %w", c.Position, err)
 			}
 		}
-		out = append(out, c)
+		ec := domain.EnrichedChart{SourceChart: c, IsOwned: isOwned}
+		// lastPlayedAt は今回常に NULL のため Valid=false → ec.LastPlayedAt は nil
+		_ = lastPlayedAt
+		out = append(out, ec)
 	}
 	return out, rows.Err()
 }
