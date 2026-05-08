@@ -62,12 +62,12 @@
     if (code >= 500) return 'badge-error';
     if (code >= 400) return 'badge-warning';
     if (code >= 300) return 'badge-info';
-    if (code >= 200) return 'badge-success';
+    if (code >= 200) return 'badge-primary';
     return 'badge-ghost';
   }
 
   function fetchStatusBadge(s: string): string {
-    if (s === 'ok') return 'badge-success';
+    if (s === 'ok') return 'badge-primary';
     if (s === 'error') return 'badge-error';
     return 'badge-ghost';
   }

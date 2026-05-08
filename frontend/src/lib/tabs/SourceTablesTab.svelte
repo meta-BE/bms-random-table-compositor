@@ -120,7 +120,7 @@
   }
 
   function statusBadge(s: SourceTableDTO): { cls: string; label: string } {
-    if (s.lastFetchStatus === 'ok') return { cls: 'badge-success', label: 'OK' };
+    if (s.lastFetchStatus === 'ok') return { cls: 'badge-primary', label: 'OK' };
     if (s.lastFetchStatus === 'error') return { cls: 'badge-error', label: 'エラー' };
     return { cls: 'badge-ghost', label: '未取得' };
   }
@@ -179,7 +179,7 @@
         <div class="text-sm opacity-70 py-4">ソース表が登録されていません。上の入力欄から URL を追加してください。</div>
       {:else}
         <div class="overflow-x-auto">
-          <table class="table table-sm table-zebra">
+          <table class="table table-sm">
             <thead>
               <tr>
                 <th>表示名 / Name</th>

@@ -179,7 +179,7 @@
   }
 
   function modeLabel(m: RefreshMode): string {
-    return m === 'per_request' ? 'リクエスト毎' : m === 'daily' ? '日次' : '手動';
+    return m === 'per_request' ? '毎回' : m === 'daily' ? '日次' : '手動';
   }
 </script>
 
@@ -206,7 +206,7 @@
         <div class="text-sm opacity-70 py-4">公開表がまだ作成されていません。「新規作成」から始めてください。</div>
       {:else}
         <div class="overflow-x-auto">
-          <table class="table table-sm table-zebra">
+          <table class="table table-sm">
             <thead>
               <tr>
                 <th>表示名</th>
@@ -296,7 +296,7 @@
         <div class="form-control w-full">
           <label class="label py-1"><span class="label-text">更新モード</span></label>
           <select class="select select-bordered select-sm w-full" bind:value={form.refreshMode}>
-            <option value="per_request">リクエスト毎 (毎回再生成)</option>
+            <option value="per_request">毎回(リクエスト毎に再生成)</option>
             <option value="daily">日次 (同一日付内で固定)</option>
             <option value="manual">手動 (再ピックボタンまで固定)</option>
           </select>

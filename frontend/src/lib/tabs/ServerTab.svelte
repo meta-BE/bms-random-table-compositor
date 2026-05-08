@@ -172,7 +172,7 @@
       <div class="flex items-center gap-2 text-sm">
         <span>状態:</span>
         {#if status.state === 'running'}
-          <span class="badge badge-success">稼働中</span>
+          <span class="badge badge-primary">稼働中</span>
           <span class="text-xs opacity-70">port {status.port} / 起動 {formatJST(status.startedAt)}</span>
         {:else if status.state === 'error'}
           <span class="badge badge-error">エラー</span>
