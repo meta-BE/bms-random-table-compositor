@@ -6,7 +6,7 @@ import "time"
 type SongdataAttachStatus struct {
 	Attached   bool
 	Path       string
-	SongCount  int        // SELECT COUNT(*) FROM sd.song の最終値
+	SongCount  int // SELECT COUNT(*) FROM sd.song の最終値
 	AttachedAt *time.Time
 	LastError  string
 }

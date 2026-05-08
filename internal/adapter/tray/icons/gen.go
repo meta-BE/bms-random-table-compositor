@@ -48,18 +48,18 @@ func main() {
 		pngBytes := pngBuf.Bytes()
 		var ico bytes.Buffer
 		// ICONDIR (6 bytes)
-		must(binary.Write(&ico, binary.LittleEndian, uint16(0)))               // Reserved
-		must(binary.Write(&ico, binary.LittleEndian, uint16(1)))               // Type = ICO
-		must(binary.Write(&ico, binary.LittleEndian, uint16(1)))               // Count = 1 image
+		must(binary.Write(&ico, binary.LittleEndian, uint16(0))) // Reserved
+		must(binary.Write(&ico, binary.LittleEndian, uint16(1))) // Type = ICO
+		must(binary.Write(&ico, binary.LittleEndian, uint16(1))) // Count = 1 image
 		// ICONDIRENTRY (16 bytes)
-		ico.WriteByte(16)                                                       // Width
-		ico.WriteByte(16)                                                       // Height
-		ico.WriteByte(0)                                                        // ColorCount (0=true color)
-		ico.WriteByte(0)                                                        // Reserved
-		must(binary.Write(&ico, binary.LittleEndian, uint16(1)))               // Planes
-		must(binary.Write(&ico, binary.LittleEndian, uint16(32)))              // BitCount
-		must(binary.Write(&ico, binary.LittleEndian, uint32(len(pngBytes))))   // BytesInRes
-		must(binary.Write(&ico, binary.LittleEndian, uint32(22)))              // ImageOffset (6+16)
+		ico.WriteByte(16)                                                    // Width
+		ico.WriteByte(16)                                                    // Height
+		ico.WriteByte(0)                                                     // ColorCount (0=true color)
+		ico.WriteByte(0)                                                     // Reserved
+		must(binary.Write(&ico, binary.LittleEndian, uint16(1)))             // Planes
+		must(binary.Write(&ico, binary.LittleEndian, uint16(32)))            // BitCount
+		must(binary.Write(&ico, binary.LittleEndian, uint32(len(pngBytes)))) // BytesInRes
+		must(binary.Write(&ico, binary.LittleEndian, uint32(22)))            // ImageOffset (6+16)
 		// PNG bytes
 		ico.Write(pngBytes)
 		must(os.WriteFile(filepath.Join(dir, s.base+".ico"), ico.Bytes(), 0644))
