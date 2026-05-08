@@ -7,6 +7,7 @@ import (
 
 	"github.com/meta-BE/bms-random-table-compositor/internal/domain"
 	"github.com/meta-BE/bms-random-table-compositor/internal/usecase"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -63,4 +64,26 @@ func TestPickResultStore_ConcurrentAccess(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
+}
+
+func TestPickResultStore_OnChange_FiresOnSet(t *testing.T) {
+	t.Parallel()
+	s := usecase.NewPickResultStore()
+	var got []string
+	s.OnChange(func(publishedID string) { got = append(got, publishedID) })
+	s.Set("a", domain.PickResult{PublishedTableID: "a"})
+	s.Set("b", domain.PickResult{PublishedTableID: "b"})
+	assert.Equal(t, []string{"a", "b"}, got)
+}
+
+func TestPickResultStore_OnChange_FiresOnDeleteAndClear(t *testing.T) {
+	t.Parallel()
+	s := usecase.NewPickResultStore()
+	s.Set("a", domain.PickResult{PublishedTableID: "a"})
+	s.Set("b", domain.PickResult{PublishedTableID: "b"})
+	var got []string
+	s.OnChange(func(publishedID string) { got = append(got, publishedID) })
+	s.Delete("a")
+	s.Clear()
+	assert.Equal(t, []string{"a", ""}, got, "delete fires id, clear fires empty string")
 }
