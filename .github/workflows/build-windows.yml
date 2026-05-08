@@ -1,10 +1,12 @@
 name: Build Windows
 
 on:
-  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -35,7 +37,7 @@ jobs:
         run: wails build -platform windows/amd64
 
       # Wails の Windows ビルドはディレクトリ名を exe 名に使う場合があるため、
-      # 一律でリネームしてから artifact 化する（POC の知見）。
+      # 一律でリネームしてから ZIP 化する (POC の知見)
       - name: Rename exe (idempotent)
         shell: pwsh
         run: |
@@ -53,10 +55,16 @@ jobs:
             }
           }
 
-      - name: Upload exe artifact
-        uses: actions/upload-artifact@v4
+      - name: Copy manual as manual.txt
+        shell: pwsh
+        run: Copy-Item docs/manual.md build/bin/manual.txt
+
+      - name: Create ZIP
+        shell: pwsh
+        run: |
+          Compress-Archive -Path build/bin/bms-random-table-compositor.exe, build/bin/manual.txt -DestinationPath build/bin/bms-random-table-compositor.zip
+
+      - name: Upload to Release
+        uses: softprops/action-gh-release@v2
         with:
-          name: bms-random-table-compositor-windows-amd64
-          path: build/bin/bms-random-table-compositor.exe
-          if-no-files-found: error
-          retention-days: 14
+          files: build/bin/bms-random-table-compositor.zip
