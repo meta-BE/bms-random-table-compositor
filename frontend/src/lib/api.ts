@@ -33,6 +33,7 @@ import {
   GetOwnedCacheStatus,
   ReloadOwnedCache,
 } from '../../wailsjs/go/handler/OwnedChartHandler';
+import { Snapshot as DashboardSnapshot } from '../../wailsjs/go/handler/DashboardHandler';
 import { EventsOn, EventsOff } from '../../wailsjs/runtime/runtime';
 
 export type ServerConfig = {
@@ -104,6 +105,37 @@ export type OwnedCacheStatusDTO = {
   loadedAt: string;
   loadedPath: string;
   lastError: string;
+};
+
+export type RequestLogDTO = {
+  at: string;
+  method: string;
+  path: string;
+  slug: string;
+  statusCode: number;
+  durationMs: number;
+};
+
+export type FetchLogDTO = {
+  at: string;
+  sourceId: string;
+  displayName: string;
+  status: 'never' | 'ok' | 'error';
+  error: string;
+};
+
+export type PickSnapshotDTO = {
+  publishedId: string;
+  generatedAt: string;
+  levelOrder: string[];
+  levelCounts: Record<string, number>;
+  totalCount: number;
+};
+
+export type DashboardSnapshotDTO = {
+  requests: RequestLogDTO[];
+  fetches: FetchLogDTO[];
+  picks: PickSnapshotDTO[];
 };
 
 export const api = {
@@ -192,5 +224,21 @@ export const api = {
   onSourceTableRefreshAllDone(cb: () => void): () => void {
     EventsOn('source_table:refresh_all_done', cb);
     return () => EventsOff('source_table:refresh_all_done');
+  },
+  // ---- ダッシュボード ----
+  getDashboardSnapshot(): Promise<DashboardSnapshotDTO> {
+    return DashboardSnapshot() as Promise<DashboardSnapshotDTO>;
+  },
+  onDashboardRequestLogged(cb: (e: RequestLogDTO) => void): () => void {
+    EventsOn('dashboard:request_logged', cb);
+    return () => EventsOff('dashboard:request_logged');
+  },
+  onDashboardFetchLogged(cb: (e: FetchLogDTO) => void): () => void {
+    EventsOn('dashboard:fetch_logged', cb);
+    return () => EventsOff('dashboard:fetch_logged');
+  },
+  onDashboardPickChanged(cb: (publishedID: string) => void): () => void {
+    EventsOn('dashboard:pick_changed', cb);
+    return () => EventsOff('dashboard:pick_changed');
   },
 };
