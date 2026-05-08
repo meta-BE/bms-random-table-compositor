@@ -22,6 +22,11 @@ poc/poc-config.json
 /logs/
 /bms-random-table-compositor
 
+# Local-only test data (個人の所持データ / 他者の表データを PUBLIC リポジトリへ載せない)
+/testdata/songdata.db
+/testdata/satellite_data.json
+/testdata/satellite_header.json
+
 # OS / Editor
 .DS_Store
 *.swp
