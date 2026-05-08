@@ -1157,6 +1157,198 @@ git commit -m "refactor(httpserver): Deps から Owned 依存を除去"
 
 ---
 
+## Task 7.5: PickResult.Charts を EnrichedChart 化 + HTML 色分け復元
+
+> **Note:** Task 7 の実装中に判明した「`Deps.Owned` は HTML ハンドラの所持色分けで実使用されている」事象に対応するため追加されたタスク。Task 7 の暫定対応 (`handler_html.go` で owned 色分けを空セット固定で無効化) を、`PickResult` 経由で渡る `EnrichedChart.IsOwned` を読む形に置き換える。
+
+**Files:**
+- Modify: `internal/domain/pick_result.go`
+- Modify: `internal/usecase/pick_usecase.go`
+- Modify: `internal/usecase/pick_usecase_test.go` (型不一致箇所のみ)
+- Modify: `internal/usecase/pick_result_store_test.go` (PickResult リテラルの型)
+- Modify: `internal/usecase/dashboard_usecase_test.go` (同上)
+- Modify: `internal/adapter/httpserver/handler_data.go` (mergeChart 引数型)
+- Modify: `internal/adapter/httpserver/handler_html.go` (色分け復元 + 不要パラメータ削除)
+- Modify: `internal/adapter/httpserver/handler_html_test.go` (色分けテスト復活)
+- Modify: `internal/adapter/httpserver/handler_test_helpers_test.go` (アタッチ済み songdata.db を作るヘルパ追加)
+
+- [ ] **Step 1: `domain.PickResult.Charts` の型変更**
+
+`internal/domain/pick_result.go`:
+```go
+type PickResult struct {
+	PublishedTableID string
+	GeneratedAt      time.Time
+	SeedKey          string
+	Charts           []EnrichedChart // ピック後・整列済み (IsOwned/LastPlayedAt 付与)
+	LevelOrder       []string
+}
+```
+
+- [ ] **Step 2: `PickUseCase.regenerate` の `.SourceChart` unwrap を撤去**
+
+`internal/usecase/pick_usecase.go` の inner ループで `for _, ec := range charts { finalCharts = append(finalCharts, ec.SourceChart) }` を `finalCharts = append(finalCharts, charts...)` に置換。`finalCharts` の型を `[]domain.EnrichedChart` に変更。
+
+- [ ] **Step 3: `mergeChart` を EnrichedChart 受け取りに変更**
+
+`internal/adapter/httpserver/handler_data.go`:
+```go
+func mergeChart(c domain.EnrichedChart) map[string]any {
+	out := make(map[string]any, len(c.Raw)+5)
+	for k, v := range c.Raw {
+		out[k] = v
+	}
+	out["md5"] = c.MD5
+	if c.SHA256 != "" {
+		out["sha256"] = c.SHA256
+	}
+	out["level"] = c.Level
+	out["title"] = c.Title
+	out["artist"] = c.Artist
+	return out
+}
+```
+
+`is_owned` / `last_played_at` は data.json に出さない (互換維持)。`c.MD5` 等は埋め込み `SourceChart` 経由で透過アクセスされる。
+
+- [ ] **Step 4: `handler_html.go` の色分け復元**
+
+`buildHTMLPageData` から `deps Deps` と `_ context.Context` の不要パラメータを削除。空セットフォールバックも削除し、`c.IsOwned` を直接読む:
+
+```go
+func buildHTMLPageData(pub domain.PublishedTable, r domain.PickResult) htmlPageData {
+	levels := make([]htmlLevel, 0, len(r.LevelOrder))
+	for _, level := range r.LevelOrder {
+		var charts []htmlChart
+		for _, c := range r.Charts {
+			if c.Level != level {
+				continue
+			}
+			owned := c.IsOwned
+			if pub.OwnedOnly {
+				owned = true
+			}
+			charts = append(charts, htmlChart{
+				Title: c.Title, Artist: c.Artist, MD5: c.MD5, Owned: owned,
+			})
+		}
+		if len(charts) == 0 {
+			continue
+		}
+		levels = append(levels, htmlLevel{Level: level, Charts: charts})
+	}
+	return htmlPageData{
+		Slug:         pub.Slug,
+		DisplayName:  pub.DisplayName,
+		Symbol:       pub.Symbol,
+		GeneratedAt:  r.GeneratedAt.Local().Format("2006-01-02 15:04:05 MST"),
+		TotalCount:   len(r.Charts),
+		IsManualMode: pub.Pick.RefreshMode == domain.RefreshModeManual,
+		Levels:       levels,
+	}
+}
+```
+
+呼び出し側 (`newHTMLHandler` 内):
+```go
+data := buildHTMLPageData(pub, result)
+```
+
+- [ ] **Step 5: テスト復活用ヘルパを追加**
+
+`internal/adapter/httpserver/handler_test_helpers_test.go` に追加:
+```go
+// seedAttachedSongdata は temp dir に songdata.db を作り attacher で ATTACH する。
+// テストで IsOwned 判定を検証するために使う。
+func (f *httpFixture) seedAttachedSongdata(t *testing.T, ownedMD5s ...string) {
+	t.Helper()
+	dir := t.TempDir()
+	songdataPath := filepath.Join(dir, "songdata.db")
+	src, err := sql.Open("sqlite", songdataPath)
+	require.NoError(t, err)
+	_, err = src.Exec(`CREATE TABLE song (md5 TEXT PRIMARY KEY)`)
+	require.NoError(t, err)
+	for _, m := range ownedMD5s {
+		_, err = src.Exec(`INSERT INTO song(md5) VALUES (?)`, m)
+		require.NoError(t, err)
+	}
+	require.NoError(t, src.Close())
+	require.NoError(t, f.attacher.Attach(context.Background(), songdataPath))
+}
+```
+
+`httpFixture` 構造体に `attacher *persistence.SongdataAttacher` フィールドを追加し、`newHTTPFixture` で構築した attacher をそこに保存する。imports に `database/sql` と modernc/sqlite ドライバ (`_ "modernc.org/sqlite"`) が必要 (既存 `persistence.OpenDB` 経由で同ドライバが登録済みのため `sql.Open("sqlite", ...)` で動く)。
+
+- [ ] **Step 6: 色分けテストの復活**
+
+`internal/adapter/httpserver/handler_html_test.go` に追加:
+```go
+func TestHTMLHandler_OwnedOnlyFalse_ColorsByAttachedSongdata(t *testing.T) {
+	fx := newHTTPFixture(t)
+	fx.seedAttachedSongdata(t, "ownedmd5")
+
+	srcID := "01J0SRC000000000000000000A"
+	_, err := fx.srcRepo.Create(context.Background(), domain.SourceTable{
+		ID: srcID, InputURL: "https://example.com/t.html",
+		InputKind: domain.InputKindHTML, DisplayName: "T", Name: "T",
+		LevelOrder: []string{"sl0"}, LastFetchStatus: domain.FetchStatusOK,
+	})
+	require.NoError(t, err)
+	require.NoError(t, fx.srcRepo.SaveFetched(context.Background(), srcID, port.FetchedTable{
+		Header: domain.BMSTableHeader{Name: "T", LevelOrder: []string{"sl0"}},
+		Charts: []domain.SourceChart{
+			{Position: 0, MD5: "ownedmd5", Level: "sl0", Title: "owned-song", Raw: map[string]any{"md5": "ownedmd5"}},
+			{Position: 1, MD5: "othermd5", Level: "sl0", Title: "other-song", Raw: map[string]any{"md5": "othermd5"}},
+		},
+	}, time.Now()))
+
+	_ = fx.seedPublished(t, "t", srcID, domain.RefreshModePerRequest, 0, false)
+
+	resp, err := http.Get(fx.mux.URL + "/t")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+
+	bodyStr := string(body)
+	assert.Contains(t, bodyStr, "owned-song")
+	assert.Contains(t, bodyStr, "other-song")
+	assert.Contains(t, bodyStr, `class="owned"`)
+	assert.Contains(t, bodyStr, `class="unowned"`)
+}
+```
+
+handler_html_test.go の import に `io`, `net/http`, `time`, `assert`, `port`, `usecase` 等を必要に応じて追加。
+
+- [ ] **Step 7: その他の PickResult リテラル更新**
+
+`internal/usecase/pick_result_store_test.go` と `internal/usecase/dashboard_usecase_test.go` で `domain.PickResult{Charts: []domain.SourceChart{...}}` がある箇所を `[]domain.EnrichedChart` に書き換え。これらのテストはチャート内容を検証していないので、空の `[]domain.EnrichedChart{}` でも可。
+
+- [ ] **Step 8: ビルド + テスト**
+
+```bash
+go build ./...
+go test ./... -count=1
+```
+
+`internal/adapter/persistence/` は testdata 依存スキップを含めて全 PASS。
+
+- [ ] **Step 9: コミット**
+
+```bash
+git add internal/domain/pick_result.go \
+        internal/usecase/pick_usecase.go \
+        internal/usecase/pick_usecase_test.go \
+        internal/usecase/pick_result_store_test.go \
+        internal/usecase/dashboard_usecase_test.go \
+        internal/adapter/httpserver/handler_data.go \
+        internal/adapter/httpserver/handler_html.go \
+        internal/adapter/httpserver/handler_html_test.go \
+        internal/adapter/httpserver/handler_test_helpers_test.go
+git commit -m "refactor(domain,httpserver): PickResult.Charts を EnrichedChart 化、HTML 色分けを attached SQL 経路で復元"
+```
+
+---
+
 ## Task 8: 不要コード一掃
 
 **Files (削除):**

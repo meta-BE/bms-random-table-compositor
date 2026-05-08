@@ -199,7 +199,9 @@ Go 側で `IsOwned=false`, `LastPlayedAt=nil` をスタンプ。`OwnedOnly=true`
   - `srcRepo.LoadCharts(ctx, sourceID, ChartQuery{OwnedOnly: pub.OwnedOnly})` → `[]EnrichedChart`
   - intersect ループ削除
 
-シャッフル / レベル順制御 / シード生成は変更なし。型シグネチャだけ `[]SourceChart` → `[]EnrichedChart` に追従する。最終 `domain.PickResult.Charts` は **`[]SourceChart` のまま**残す（`EnrichedChart.SourceChart` を取り出して詰める）。`PickResult` は HTTP 応答にも使われ、所持状態は外部に出さないため。
+シャッフル / レベル順制御 / シード生成は変更なし。型シグネチャだけ `[]SourceChart` → `[]EnrichedChart` に追従する。最終 `domain.PickResult.Charts` は **`[]EnrichedChart` に変更**する。理由: HTML ハンドラ (`handler_html.go`) が所持状態に応じた色分けを行うため、ピック結果と一緒に `IsOwned` フラグを保持する必要がある。HTTP サーバはローカル限定 (利用ユーザー一人) のため所持状態を `data.json` 経由で外部に出すことに問題はない。
+
+`data.json` のシリアライズフォーマットは互換維持: `mergeChart` は `EnrichedChart` を受け取るが、内部で埋め込み `SourceChart` 部分のみ map に展開する（`is_owned`/`last_played_at` は出力しない）。
 
 ### 3.6 ConfigUseCase / Bootstrap
 
