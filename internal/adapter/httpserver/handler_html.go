@@ -53,18 +53,10 @@ func newHTMLHandler(deps Deps) http.HandlerFunc {
 }
 
 // buildHTMLPageData はピック結果をテンプレ向けに整形する。
-// PickBySlug は OwnedOnly=true 時に既に所持絞り込み済みなので、ここで再 fetch するのは
-// OwnedOnly=false の「未絞り込み」の場合に色分けするため。
-func buildHTMLPageData(ctx context.Context, deps Deps, pub domain.PublishedTable, r domain.PickResult) htmlPageData {
+// OwnedOnly=false の所持色分けは Task 8 以降で ATTACH クエリ経由に置き換える。
+func buildHTMLPageData(_ context.Context, deps Deps, pub domain.PublishedTable, r domain.PickResult) htmlPageData {
+	// Task 8 で EnrichedChart の owned フラグを利用するまで空セットで色分けを無効化
 	ownedSet := map[string]struct{}{}
-	if deps.Owned != nil {
-		got, err := deps.Owned.Get(ctx)
-		if err != nil {
-			deps.Log.Warn("owned md5 cache fetch failed in html view", "err", err, "slug", pub.Slug)
-		} else {
-			ownedSet = got
-		}
-	}
 
 	levels := make([]htmlLevel, 0, len(r.LevelOrder))
 	for _, level := range r.LevelOrder {

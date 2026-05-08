@@ -156,7 +156,6 @@ func Bootstrap() (*Services, error) {
 		return httpserver.New(addr, httpserver.Deps{
 			Pick:      pickUC,
 			Pub:       pubUC,
-			Owned:     ownedCache,
 			Dashboard: dashboardUC,
 			Log:       lg,
 		})

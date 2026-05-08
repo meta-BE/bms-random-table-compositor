@@ -25,7 +25,6 @@ var indexTemplate = template.Must(template.ParseFS(templatesFS, "templates/index
 type Deps struct {
 	Pick      *usecase.PickUseCase
 	Pub       *usecase.PublishedTableUseCase
-	Owned     *usecase.OwnedMD5Cache    // Task 15 で使用
 	Dashboard *usecase.DashboardUseCase
 	Log       *slog.Logger
 }
