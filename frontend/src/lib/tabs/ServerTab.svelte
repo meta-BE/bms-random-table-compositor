@@ -1,18 +1,18 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
-  import { api, type ServerConfig, type ServerStatusDTO, type OwnedCacheStatusDTO } from '../api';
+  import { api, type ServerConfig, type ServerStatusDTO, type SongdataAttachStatusDTO } from '../api';
 
   let cfg: ServerConfig = { port: 50000, songdataDbPath: '' };
   let savedCfg: ServerConfig = { port: 50000, songdataDbPath: '' };
   let status: ServerStatusDTO = { state: 'stopped', port: 0, startedAt: '', lastError: '' };
-  let owned: OwnedCacheStatusDTO = { loaded: false, count: 0, loadedAt: '', loadedPath: '', lastError: '' };
+  let attach: SongdataAttachStatusDTO = { attached: false, path: '', songCount: 0, attachedAt: '', lastError: '' };
 
   let configLoading = true;
   let saving = false;
   let savingError = '';
   let serverActing = false;
-  let ownedLoading = true;
-  let ownedReloading = false;
+  let attachLoading = true;
+  let attachActing = false;
 
   let unsubServer: (() => void) | null = null;
 
@@ -31,11 +31,11 @@
       // status は既定値で続行
     }
     try {
-      owned = await api.getOwnedCacheStatus();
+      attach = await api.getSongdataAttachStatus();
     } catch {
       // ignore
     } finally {
-      ownedLoading = false;
+      attachLoading = false;
     }
     unsubServer = api.onServerStatusChanged((s) => {
       status = s;
@@ -70,8 +70,8 @@
         await api.setSongdataDBPath(cfg.songdataDbPath);
       }
       savedCfg = { ...cfg };
-      // songdata.db パス変更で所持キャッシュが invalidate されるため再取得
-      owned = await api.getOwnedCacheStatus();
+      // songdata.db パス変更でアタッチが再実行されるため状態を再取得
+      attach = await api.getSongdataAttachStatus();
     } catch (e) {
       savingError = (e as Error).message;
     } finally {
@@ -99,15 +99,15 @@
     try { await api.restartServer(); } catch (e) { console.warn(e); } finally { serverActing = false; }
   }
 
-  async function reloadOwned() {
-    ownedReloading = true;
+  async function reattach() {
+    attachActing = true;
     try {
-      await api.reloadOwnedCache();
-      owned = await api.getOwnedCacheStatus();
+      await api.reattachSongdata();
+      attach = await api.getSongdataAttachStatus();
     } catch (e) {
-      console.warn('reload owned failed', e);
+      console.warn('reattach failed', e);
     } finally {
-      ownedReloading = false;
+      attachActing = false;
     }
   }
 
@@ -148,6 +148,33 @@
           <div class="join w-full">
             <input class="input input-bordered input-sm join-item flex-1" type="text" bind:value={cfg.songdataDbPath} />
             <button class="btn btn-sm join-item" type="button" on:click={pickPath}>参照…</button>
+          </div>
+          <div class="text-sm space-y-1 mt-1">
+            <div class="flex items-center gap-2">
+              <span>状態:</span>
+              {#if attachLoading}
+                <span class="loading loading-spinner loading-xs"></span>
+              {:else if attach.attached}
+                <span class="badge badge-success">アタッチ済</span>
+                <span class="text-xs opacity-70">{attach.songCount} 曲</span>
+              {:else if attach.lastError}
+                <span class="badge badge-error">エラー</span>
+              {:else}
+                <span class="badge">未設定</span>
+              {/if}
+            </div>
+            {#if attach.attachedAt}
+              <div class="text-xs opacity-70">最終アタッチ: {formatJST(attach.attachedAt)}</div>
+            {/if}
+            {#if attach.lastError}
+              <div class="alert alert-warning text-xs whitespace-pre-line">{attach.lastError}</div>
+            {/if}
+            <div class="flex justify-end">
+              <button class="btn btn-xs" disabled={attachActing} on:click={reattach}>
+                {#if attachActing}<span class="loading loading-spinner loading-xs"></span>{/if}
+                再アタッチ
+              </button>
+            </div>
           </div>
         </div>
 
@@ -191,31 +218,4 @@
     </div>
   </div>
 
-  <!-- 所持キャッシュ -->
-  <div class="card bg-base-100 shadow-sm border border-base-200">
-    <div class="card-body">
-      <h2 class="card-title text-base">所持キャッシュ</h2>
-      {#if ownedLoading}
-        <div class="flex items-center gap-2 text-sm">
-          <span class="loading loading-spinner loading-sm"></span>
-          <span>読み込み中…</span>
-        </div>
-      {:else}
-        <div class="text-sm space-y-1">
-          <div>状態: {owned.loaded ? `読み込み済み (${owned.count} 件)` : '未読み込み'}</div>
-          <div class="text-xs opacity-70">パス: {owned.loadedPath || '(未設定)'} </div>
-          <div class="text-xs opacity-70">最終読み込み: {formatJST(owned.loadedAt)}</div>
-          {#if owned.lastError}
-            <div class="alert alert-warning text-xs">{owned.lastError}</div>
-          {/if}
-        </div>
-        <div class="card-actions justify-end mt-2">
-          <button class="btn btn-sm" disabled={ownedReloading} on:click={reloadOwned}>
-            {#if ownedReloading}<span class="loading loading-spinner loading-xs"></span>{/if}
-            再読み込み
-          </button>
-        </div>
-      {/if}
-    </div>
-  </div>
 </section>

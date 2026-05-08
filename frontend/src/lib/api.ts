@@ -30,9 +30,9 @@ import {
   RestartServer,
 } from '../../wailsjs/go/handler/ServerStatusHandler';
 import {
-  GetOwnedCacheStatus,
-  ReloadOwnedCache,
-} from '../../wailsjs/go/handler/OwnedChartHandler';
+  GetSongdataAttachStatus,
+  ReattachSongdata,
+} from '../../wailsjs/go/handler/SongdataHandler';
 import { Snapshot as DashboardSnapshot } from '../../wailsjs/go/handler/DashboardHandler';
 import { EventsOn, EventsOff } from '../../wailsjs/runtime/runtime';
 
@@ -99,11 +99,11 @@ export type ServerStatusDTO = {
   lastError: string;
 };
 
-export type OwnedCacheStatusDTO = {
-  loaded: boolean;
-  count: number;
-  loadedAt: string;
-  loadedPath: string;
+export type SongdataAttachStatusDTO = {
+  attached: boolean;
+  path: string;
+  songCount: number;
+  attachedAt: string;
   lastError: string;
 };
 
@@ -213,12 +213,12 @@ export const api = {
     EventsOn('server_status:changed', cb);
     return () => EventsOff('server_status:changed');
   },
-  // ---- 所持キャッシュ ----
-  getOwnedCacheStatus(): Promise<OwnedCacheStatusDTO> {
-    return GetOwnedCacheStatus() as Promise<OwnedCacheStatusDTO>;
+  // ---- songdata.db アタッチ ----
+  getSongdataAttachStatus(): Promise<SongdataAttachStatusDTO> {
+    return GetSongdataAttachStatus() as Promise<SongdataAttachStatusDTO>;
   },
-  reloadOwnedCache(): Promise<void> {
-    return ReloadOwnedCache();
+  reattachSongdata(): Promise<void> {
+    return ReattachSongdata();
   },
   // ---- イベント ----
   onSourceTableRefreshAllDone(cb: () => void): () => void {
