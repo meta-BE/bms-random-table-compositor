@@ -23,9 +23,11 @@ var indexTemplate = template.Must(template.ParseFS(templatesFS, "templates/index
 
 // Deps は HTTP ハンドラが依存する usecase 群。
 type Deps struct {
-	Pick *usecase.PickUseCase
-	Pub  *usecase.PublishedTableUseCase
-	Log  *slog.Logger
+	Pick      *usecase.PickUseCase
+	Pub       *usecase.PublishedTableUseCase
+	Owned     *usecase.OwnedMD5Cache    // Task 15 で使用
+	Dashboard *usecase.DashboardUseCase
+	Log       *slog.Logger
 }
 
 // AdapterServer は usecase.HTTPServer を実装する *http.Server ラッパ。
