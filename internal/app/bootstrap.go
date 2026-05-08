@@ -35,6 +35,7 @@ type Services struct {
 	ServerStatusHandler   *handler.ServerStatusHandler
 	OwnedChartHandler     *handler.OwnedChartHandler
 	DashboardHandler      *handler.DashboardHandler
+	SongdataHandler       *handler.SongdataHandler
 	SourceTableUseCase    *usecase.SourceTableUseCase
 	ServerUseCase         *usecase.ServerUseCase
 	PickResultStore       *usecase.PickResultStore
@@ -133,6 +134,7 @@ func Bootstrap() (*Services, error) {
 	pickUC := usecase.NewPickUseCase(pubRepo, sourceRepo, pickStore, systemClock, randFactory, lg)
 	pickHandler := handler.NewPickHandler(pickUC)
 	ownedHandler := handler.NewOwnedChartHandler(ownedCache)
+	songdataHandler := handler.NewSongdataHandler(sourceAttacher, configUC, pickUC)
 
 	// songdata_db_path 変更時に sd を再アタッチ + ピックキャッシュを clear
 	configUC.AddSongdataPathChangeHook(func() {
@@ -175,6 +177,7 @@ func Bootstrap() (*Services, error) {
 		ServerStatusHandler:   serverHandler,
 		OwnedChartHandler:     ownedHandler,
 		DashboardHandler:      dashboardHandler,
+		SongdataHandler:       songdataHandler,
 		SourceTableUseCase:    sourceUC,
 		ServerUseCase:         serverUC,
 		PickResultStore:       pickStore,

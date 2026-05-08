@@ -55,6 +55,7 @@ func main() {
 			services.PickHandler,
 			services.ServerStatusHandler,
 			services.OwnedChartHandler,
+			services.SongdataHandler,
 			services.DashboardHandler,
 		},
 	}); err != nil {

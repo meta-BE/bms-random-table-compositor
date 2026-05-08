@@ -34,6 +34,7 @@ func (a *App) startup(ctx context.Context) {
 	a.services.ServerStatusHandler.SetContext(ctx)
 	a.services.OwnedChartHandler.SetContext(ctx)
 	a.services.DashboardHandler.SetContext(ctx)
+	a.services.SongdataHandler.SetContext(ctx)
 	a.services.Logger.Info("wails startup")
 
 	// ServerStatus 変化を Wails event 経由でフロントへ流す + トレイ状態を同期
