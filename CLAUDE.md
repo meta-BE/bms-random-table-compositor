@@ -17,8 +17,4 @@
 - 設定画面のUI規約は `docs/style-guide.md` に従う（後続 Plan で整備）
 
 ## マニュアル
-- ユーザー向けは `docs/manual.md`（後続 Plan で整備）。機能追加・変更時は更新
-
-## POC
-- `poc/` 配下は Phase 0 POC の参照用コードベース。**本体実装はリポジトリルート直下**
-- POC で得た知見は `poc/NOTES.md` を参照
+- ユーザー向けは `docs/manual.md`。機能追加・変更時は更新

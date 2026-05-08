@@ -1,12 +1,3 @@
-# Wails build artifacts (POC)
-poc/build/bin/
-poc/frontend/dist/
-poc/frontend/node_modules/
-poc/frontend/wailsjs/
-
-# POC runtime artifacts
-poc/poc-config.json
-
 # Wails build artifacts (main app)
 /build/bin/
 /frontend/dist/
