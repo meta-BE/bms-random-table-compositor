@@ -52,7 +52,7 @@
   function formatJST(iso: string): string {
     if (!iso) return '-';
     try {
-      return new Date(iso).toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo', hour12: false });
+      return new Date(iso).toLocaleString('sv-SE', { timeZone: 'Asia/Tokyo', hour12: false });
     } catch {
       return iso;
     }

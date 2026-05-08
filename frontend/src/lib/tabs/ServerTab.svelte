@@ -114,7 +114,7 @@
   function formatJST(iso: string): string {
     if (!iso) return '-';
     try {
-      return new Date(iso).toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo', hour12: false });
+      return new Date(iso).toLocaleString('sv-SE', { timeZone: 'Asia/Tokyo', hour12: false });
     } catch {
       return iso;
     }
@@ -149,33 +149,32 @@
             <input class="input input-bordered input-sm join-item flex-1" type="text" bind:value={cfg.songdataDbPath} />
             <button class="btn btn-sm join-item" type="button" on:click={pickPath}>参照…</button>
           </div>
-          <div class="text-sm space-y-1 mt-1">
-            <div class="flex items-center gap-2">
-              <span>状態:</span>
-              {#if attachLoading}
-                <span class="loading loading-spinner loading-xs"></span>
-              {:else if attach.attached}
-                <span class="badge badge-success">アタッチ済</span>
-                <span class="text-xs opacity-70">{attach.songCount} 曲</span>
-              {:else if attach.lastError}
-                <span class="badge badge-error">エラー</span>
-              {:else}
-                <span class="badge">未設定</span>
-              {/if}
-            </div>
+        </div>
+
+        <div class="text-sm space-y-1 mt-4">
+          <div class="flex items-center flex-wrap gap-2">
+            <span>状態:</span>
+            {#if attachLoading}
+              <span class="loading loading-spinner loading-xs"></span>
+            {:else if attach.attached}
+              <span class="badge badge-primary">アタッチ済</span>
+              <span class="text-xs opacity-70">{attach.songCount} 曲</span>
+            {:else if attach.lastError}
+              <span class="badge badge-error">エラー</span>
+            {:else}
+              <span class="badge">未設定</span>
+            {/if}
             {#if attach.attachedAt}
-              <div class="text-xs opacity-70">最終アタッチ: {formatJST(attach.attachedAt)}</div>
+              <span class="text-xs opacity-70">最終アタッチ: {formatJST(attach.attachedAt)}</span>
             {/if}
-            {#if attach.lastError}
-              <div class="alert alert-warning text-xs whitespace-pre-line">{attach.lastError}</div>
-            {/if}
-            <div class="flex justify-end">
-              <button class="btn btn-xs" disabled={attachActing} on:click={reattach}>
-                {#if attachActing}<span class="loading loading-spinner loading-xs"></span>{/if}
-                再アタッチ
-              </button>
-            </div>
+            <button class="btn btn-xs ml-auto" disabled={attachActing} on:click={reattach}>
+              {#if attachActing}<span class="loading loading-spinner loading-xs"></span>{/if}
+              再アタッチ
+            </button>
           </div>
+          {#if attach.lastError}
+            <div class="alert alert-warning text-xs whitespace-pre-line">{attach.lastError}</div>
+          {/if}
         </div>
 
         <div class="card-actions justify-end mt-2">
@@ -196,7 +195,7 @@
   <div class="card bg-base-100 shadow-sm border border-base-200">
     <div class="card-body">
       <h2 class="card-title text-base">HTTP サーバ</h2>
-      <div class="flex items-center gap-2 text-sm">
+      <div class="flex items-center flex-wrap gap-2 text-sm">
         <span>状態:</span>
         {#if status.state === 'running'}
           <span class="badge badge-primary">稼働中</span>
@@ -206,15 +205,15 @@
         {:else}
           <span class="badge">停止中</span>
         {/if}
+        <div class="ml-auto flex gap-2">
+          <button class="btn btn-sm" disabled={serverActing || status.state === 'running'} on:click={startSrv}>起動</button>
+          <button class="btn btn-sm" disabled={serverActing || status.state !== 'running'} on:click={stopSrv}>停止</button>
+          <button class="btn btn-sm" disabled={serverActing} on:click={restartSrv}>再起動</button>
+        </div>
       </div>
       {#if status.state === 'error' && status.lastError}
         <div class="alert alert-error text-sm mt-2 whitespace-pre-line">{status.lastError}</div>
       {/if}
-      <div class="card-actions justify-end mt-2">
-        <button class="btn btn-sm" disabled={serverActing || status.state === 'running'} on:click={startSrv}>起動</button>
-        <button class="btn btn-sm" disabled={serverActing || status.state !== 'running'} on:click={stopSrv}>停止</button>
-        <button class="btn btn-sm" disabled={serverActing} on:click={restartSrv}>再起動</button>
-      </div>
     </div>
   </div>
 
