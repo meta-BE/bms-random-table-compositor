@@ -14,7 +14,11 @@
 - 必ずユニットテストを追加 (`internal/adapter/persistence/migrations_test.go`)
 
 ## フロントエンド
-- 設定画面のUI規約は `docs/style-guide.md` に従う（後続 Plan で整備）
+- Stack: Svelte 4 + Vite 5 + TypeScript 5 + Tailwind v4 + daisyUI v5 (theme: emerald)。bms-elsa の構成を参考にする
+
+## テストデータ
+- `testdata/{songdata.db,satellite_*.json}` は `.gitignore` 対象 (PUBLIC リポジトリで個人/他者データ非載せ)
+- `internal/adapter/persistence/songdata_reader_test.go` は `testdata/songdata.db` をローカル配置前提。クリーンチェックアウト直後はこのテストだけ失敗する
 
 ## マニュアル
 - ユーザー向けは `docs/manual.md`。機能追加・変更時は更新
