@@ -14,12 +14,45 @@ import (
 	"github.com/meta-BE/bms-random-table-compositor/internal/port"
 )
 
+// RefreshCompleteEvent は RefreshOne 完了時にリスナーへ渡されるイベント。
+// 成功・失敗どちらの場合も発火する。
+type RefreshCompleteEvent struct {
+	SourceID    string
+	DisplayName string
+	Status      domain.FetchStatus
+	Error       string
+	At          time.Time
+}
+
 // SourceTableUseCase はソース表の CRUD と取得（refresh）のビジネスロジックを束ねる。
 type SourceTableUseCase struct {
 	repo    port.SourceTableRepo
 	fetcher port.SourceTableFetcher
 	idGen   port.IDGenerator
 	log     *slog.Logger
+
+	mu               sync.Mutex
+	refreshListeners []func(RefreshCompleteEvent)
+}
+
+// OnRefreshComplete は RefreshOne 完了時に呼ばれるリスナーを登録する。
+// 成功・失敗どちらの場合も呼ばれる。複数登録可。
+func (u *SourceTableUseCase) OnRefreshComplete(fn func(RefreshCompleteEvent)) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.refreshListeners = append(u.refreshListeners, fn)
+}
+
+// fireRefreshComplete はリスナーを同期呼び出しする内部ヘルパー。
+// mu をロックしてリスナーのコピーを取得してから mu を解放し、
+// コピーに対して呼び出すことでデッドロックを回避する。
+func (u *SourceTableUseCase) fireRefreshComplete(ev RefreshCompleteEvent) {
+	u.mu.Lock()
+	listeners := append(([]func(RefreshCompleteEvent))(nil), u.refreshListeners...)
+	u.mu.Unlock()
+	for _, fn := range listeners {
+		fn(ev)
+	}
 }
 
 // NewSourceTableUseCase は新しい SourceTableUseCase を作る。
@@ -107,12 +140,27 @@ func (u *SourceTableUseCase) UpdateDisplayName(ctx context.Context, id string, d
 // 取得失敗自体はエラーとして返さず、Repo.MarkFetchError で記録して nil を返す
 // （RefreshAll の途中で goroutine を止めないため）。
 // Repo の永続化失敗は通常エラーで返す。
+// 成否どちらの場合も OnRefreshComplete で登録したリスナーを呼ぶ。
 func (u *SourceTableUseCase) RefreshOne(ctx context.Context, id string) error {
 	st, err := u.repo.Get(ctx, id)
 	if err != nil {
 		return err
 	}
 	now := time.Now()
+
+	// 完了時に必ずリスナーへ通知する。
+	// finalStatus / finalError は処理結果に応じて書き換える。
+	finalStatus := domain.FetchStatusError
+	finalError := ""
+	defer func() {
+		u.fireRefreshComplete(RefreshCompleteEvent{
+			SourceID:    id,
+			DisplayName: st.DisplayName,
+			Status:      finalStatus,
+			Error:       finalError,
+			At:          time.Now(),
+		})
+	}()
 
 	var (
 		fetched  port.FetchedTable
@@ -130,6 +178,7 @@ func (u *SourceTableUseCase) RefreshOne(ctx context.Context, id string) error {
 	if fetchErr != nil {
 		u.log.Warn("source table refresh failed",
 			"id", id, "url", st.InputURL, "err", fetchErr)
+		finalError = fetchErr.Error()
 		if mErr := u.repo.MarkFetchError(ctx, id, fetchErr, now); mErr != nil {
 			return fmt.Errorf("mark fetch error: %w", mErr)
 		}
@@ -138,11 +187,13 @@ func (u *SourceTableUseCase) RefreshOne(ctx context.Context, id string) error {
 
 	if err := u.repo.SaveFetched(ctx, id, fetched, now); err != nil {
 		u.log.Error("source table save failed", "id", id, "err", err)
+		finalError = err.Error()
 		return fmt.Errorf("save fetched: %w", err)
 	}
 	u.log.Info("source table refreshed",
 		"id", id, "name", fetched.Header.Name,
 		"charts", len(fetched.Charts), "notModified", fetched.NotModified)
+	finalStatus = domain.FetchStatusOK
 	return nil
 }
 

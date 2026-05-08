@@ -13,6 +13,7 @@ import (
 	"github.com/meta-BE/bms-random-table-compositor/internal/domain"
 	"github.com/meta-BE/bms-random-table-compositor/internal/port"
 	"github.com/meta-BE/bms-random-table-compositor/internal/usecase"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -356,4 +357,56 @@ func TestSourceTableUseCase_RefreshAll_RunsAllAndContinuesOnError(t *testing.T) 
 	require.Equal(t, domain.FetchStatusError, repo.rows["c"].LastFetchStatus)
 	require.Equal(t, domain.FetchStatusOK, repo.rows["d"].LastFetchStatus)
 	require.Equal(t, domain.FetchStatusOK, repo.rows["e"].LastFetchStatus)
+}
+
+// ---- OnRefreshComplete hook テスト ----
+
+func TestSourceTableUseCase_OnRefreshComplete_FiresOnSuccess(t *testing.T) {
+	repo := newFakeSourceRepo()
+	fetcher := newFakeFetcher()
+	uc := usecase.NewSourceTableUseCase(repo, fetcher,
+		&fakeIDGen{ids: []string{"id-1"}}, newSilentLogger())
+
+	const u = "https://example.com/sl/table.html"
+	fetcher.results[u] = port.FetchedTable{
+		Header: domain.BMSTableHeader{
+			Name: "SL", Symbol: "★", LevelOrder: []string{"sl0"},
+			DataURL: "https://example.com/sl/data.json",
+		},
+		Charts: []domain.SourceChart{{Position: 0, MD5: "m1", Level: "sl0", Title: "T"}},
+		ETag:   "tag-1",
+	}
+
+	id, err := uc.Add(context.Background(), usecase.AddSourceTableInput{URL: u})
+	require.NoError(t, err)
+
+	var got []usecase.RefreshCompleteEvent
+	uc.OnRefreshComplete(func(e usecase.RefreshCompleteEvent) { got = append(got, e) })
+
+	require.NoError(t, uc.RefreshOne(context.Background(), id))
+	require.Len(t, got, 1)
+	assert.Equal(t, id, got[0].SourceID)
+	assert.Equal(t, domain.FetchStatusOK, got[0].Status)
+	assert.Empty(t, got[0].Error)
+}
+
+func TestSourceTableUseCase_OnRefreshComplete_FiresOnError(t *testing.T) {
+	repo := newFakeSourceRepo()
+	fetcher := newFakeFetcher()
+	uc := usecase.NewSourceTableUseCase(repo, fetcher,
+		&fakeIDGen{ids: []string{"id-1"}}, newSilentLogger())
+
+	const u = "https://example.com/sl/table.html"
+	fetcher.errs[u] = errors.New("network error")
+
+	id, err := uc.Add(context.Background(), usecase.AddSourceTableInput{URL: u})
+	require.NoError(t, err)
+
+	var got []usecase.RefreshCompleteEvent
+	uc.OnRefreshComplete(func(e usecase.RefreshCompleteEvent) { got = append(got, e) })
+
+	_ = uc.RefreshOne(context.Background(), id) // エラーでも通知
+	require.Len(t, got, 1)
+	assert.Equal(t, domain.FetchStatusError, got[0].Status)
+	assert.Contains(t, got[0].Error, "network error")
 }
