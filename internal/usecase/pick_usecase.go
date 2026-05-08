@@ -139,9 +139,22 @@ func (u *PickUseCase) regenerate(ctx context.Context, pub domain.PublishedTable)
 	// シード生成
 	seed, seedKey := u.makeSeed(pub)
 
-	// レベル別シャッフル + 先頭 N 曲（または全件）
+	// レベル並び順を先に確定する。
+	// rng の消費順を Go の map 反復順（仕様上ランダム化される）に依存させると、
+	// 同一シードでも実行ごとに各レベルに割り当たる乱数列がズレて
+	// daily モードでも再起動ごとに結果が変わる。これを避けるため、
+	// シャッフル前に決定論的なレベル順序を組み立てる。
+	levelOrder := buildLevelOrder(src.LevelOrder, byLevel)
+
+	// レベル別シャッフル + 先頭 N 曲（または全件）。levelOrder の順に rng を消費する。
 	rng := rand.New(u.randNew(seed))
-	for level, charts := range byLevel {
+	var finalCharts []domain.SourceChart
+	var finalLevelOrder []string
+	for _, level := range levelOrder {
+		charts, ok := byLevel[level]
+		if !ok || len(charts) == 0 {
+			continue
+		}
 		// position 昇順でいったん並べ替え（決定論性保証）
 		sort.SliceStable(charts, func(i, j int) bool { return charts[i].Position < charts[j].Position })
 		if pub.Pick.PerLevel > 0 && len(charts) > pub.Pick.PerLevel {
@@ -149,49 +162,8 @@ func (u *PickUseCase) regenerate(ctx context.Context, pub domain.PublishedTable)
 			charts = charts[:pub.Pick.PerLevel]
 			sort.SliceStable(charts, func(i, j int) bool { return charts[i].Position < charts[j].Position })
 		}
-		byLevel[level] = charts
-	}
-
-	// レベル順序の決定: ソース表 level_order があればそれに従い、無ければ自然順
-	// （数値解釈できるものを数値昇順で先に、解釈不能なものは文字列昇順で末尾に）
-	order := src.LevelOrder
-	if len(order) == 0 {
-		order = make([]string, 0, len(byLevel))
-		for k := range byLevel {
-			order = append(order, k)
-		}
-		sortLevelsNatural(order)
-	}
-
-	// 最終 Charts と level_order（残ったレベルのみ）を組み立て
-	var finalCharts []domain.SourceChart
-	var finalLevelOrder []string
-	for _, level := range order {
-		charts, ok := byLevel[level]
-		if !ok || len(charts) == 0 {
-			continue
-		}
 		finalCharts = append(finalCharts, charts...)
 		finalLevelOrder = append(finalLevelOrder, level)
-	}
-
-	// level_order に無いレベルが残っていれば末尾追加（自然順）
-	if len(src.LevelOrder) > 0 {
-		known := map[string]struct{}{}
-		for _, l := range src.LevelOrder {
-			known[l] = struct{}{}
-		}
-		var extra []string
-		for k, v := range byLevel {
-			if _, ok := known[k]; !ok && len(v) > 0 {
-				extra = append(extra, k)
-			}
-		}
-		sortLevelsNatural(extra)
-		for _, l := range extra {
-			finalCharts = append(finalCharts, byLevel[l]...)
-			finalLevelOrder = append(finalLevelOrder, l)
-		}
 	}
 
 	r := domain.PickResult{
@@ -231,6 +203,37 @@ func fnv32(s string) uint32 {
 	h := fnv.New32a()
 	_, _ = h.Write([]byte(s))
 	return h.Sum32()
+}
+
+// buildLevelOrder は決定論的なレベル並び順を返す。
+// srcOrder（ソース難易度表が宣言した並び）を最優先し、そこに含まれない実在レベルを
+// 自然順で末尾に並べる。srcOrder が空の場合は全レベルを自然順で並べる。
+// シャッフルループより前にこの順序を確定することで、
+// rng 消費順が Go map の反復順ランダム化に左右されないようにする。
+func buildLevelOrder(srcOrder []string, byLevel map[string][]domain.SourceChart) []string {
+	if len(srcOrder) == 0 {
+		order := make([]string, 0, len(byLevel))
+		for k := range byLevel {
+			order = append(order, k)
+		}
+		sortLevelsNatural(order)
+		return order
+	}
+	known := make(map[string]struct{}, len(srcOrder))
+	for _, l := range srcOrder {
+		known[l] = struct{}{}
+	}
+	extra := make([]string, 0, len(byLevel))
+	for k := range byLevel {
+		if _, ok := known[k]; !ok {
+			extra = append(extra, k)
+		}
+	}
+	sortLevelsNatural(extra)
+	order := make([]string, 0, len(srcOrder)+len(extra))
+	order = append(order, srcOrder...)
+	order = append(order, extra...)
+	return order
 }
 
 // sortLevelsNatural は BMS 難易度表のレベル列を自然順に並べる。

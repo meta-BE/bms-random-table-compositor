@@ -3,8 +3,10 @@ package usecase_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
+	"strconv"
 	"testing"
 	"time"
 
@@ -309,6 +311,80 @@ func TestPickUseCase_DeterministicWithSameSeed(t *testing.T) {
 	require.Equal(t, len(ra.Charts), len(rb.Charts))
 	for i := range ra.Charts {
 		require.Equal(t, ra.Charts[i].MD5, rb.Charts[i].MD5)
+	}
+}
+
+// TestPickUseCase_DeterministicAcrossRestarts は、同一シードのもとで
+// regenerate を何度走らせても結果が完全一致することを保証する。
+// 複数レベル + PerLevel 制限の条件下で、シャッフルループが Go の map 反復
+// ランダム化に依存していると、レベルごとに割り当たる乱数列がブレて
+// 同一日でも結果が変わる（再起動で変わって見える）。複数回ループで検出する。
+func TestPickUseCase_DeterministicAcrossRestarts(t *testing.T) {
+	build := func() *pickUCFixture {
+		f := newPickUCFixture(t)
+		var charts []domain.SourceChart
+		levels := []string{"0", "1", "2", "3", "4"}
+		pos := 0
+		for _, lv := range levels {
+			for i := 0; i < 5; i++ {
+				charts = append(charts, chartFixture("SRC1", lv, pos,
+					fmt.Sprintf("L%s-%d", lv, i)))
+				pos++
+			}
+		}
+		f.seedSource(t, "SRC1", levels, domain.FetchStatusOK, charts)
+		f.seedPub(t, "PUB1", "p1", "SRC1", false, 2, domain.RefreshModeDaily)
+		return f
+	}
+
+	expected, _, err := build().uc.PickBySlug(context.Background(), "p1")
+	require.NoError(t, err)
+
+	// 複数回新しい fixture（新しい store / 新しい map）で生成して
+	// map 反復順がブレても結果が一致することを確認する。
+	for i := 0; i < 50; i++ {
+		got, _, err := build().uc.PickBySlug(context.Background(), "p1")
+		require.NoError(t, err)
+		require.Equal(t, len(expected.Charts), len(got.Charts), "iteration %d", i)
+		for j := range expected.Charts {
+			require.Equal(t, expected.Charts[j].MD5, got.Charts[j].MD5,
+				"iteration %d, position %d", i, j)
+		}
+		require.Equal(t, expected.LevelOrder, got.LevelOrder, "iteration %d", i)
+	}
+}
+
+// TestPickUseCase_DeterministicAcrossRestarts_NoSrcLevelOrder は、
+// ソース表が level_order を提供しない場合（自然順フォールバック）でも
+// 同一シードなら結果が一致することを保証する。
+func TestPickUseCase_DeterministicAcrossRestarts_NoSrcLevelOrder(t *testing.T) {
+	build := func() *pickUCFixture {
+		f := newPickUCFixture(t)
+		var charts []domain.SourceChart
+		pos := 0
+		for lv := 0; lv < 6; lv++ {
+			for i := 0; i < 4; i++ {
+				charts = append(charts, chartFixture("SRC1", strconv.Itoa(lv), pos,
+					fmt.Sprintf("L%d-%d", lv, i)))
+				pos++
+			}
+		}
+		// level_order を空にしてフォールバック経路を通す
+		f.seedSource(t, "SRC1", nil, domain.FetchStatusOK, charts)
+		f.seedPub(t, "PUB1", "p1", "SRC1", false, 2, domain.RefreshModeDaily)
+		return f
+	}
+
+	expected, _, err := build().uc.PickBySlug(context.Background(), "p1")
+	require.NoError(t, err)
+
+	for i := 0; i < 50; i++ {
+		got, _, err := build().uc.PickBySlug(context.Background(), "p1")
+		require.NoError(t, err)
+		for j := range expected.Charts {
+			require.Equal(t, expected.Charts[j].MD5, got.Charts[j].MD5,
+				"iteration %d, position %d", i, j)
+		}
 	}
 }
 
