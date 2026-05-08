@@ -24,8 +24,10 @@ func TestDashboardUseCase_AppendAndSnapshot(t *testing.T) {
 		PublishedTableID: "pub1",
 		GeneratedAt:      now,
 		LevelOrder:       []string{"sl0", "sl1"},
-		Charts: []domain.SourceChart{
-			{Level: "sl0"}, {Level: "sl0"}, {Level: "sl1"},
+		Charts: []domain.EnrichedChart{
+			{SourceChart: domain.SourceChart{Level: "sl0"}},
+			{SourceChart: domain.SourceChart{Level: "sl0"}},
+			{SourceChart: domain.SourceChart{Level: "sl1"}},
 		},
 	})
 

@@ -132,7 +132,7 @@ func (u *PickUseCase) regenerate(ctx context.Context, pub domain.PublishedTable)
 
 	// レベル別シャッフル + 先頭 N 曲（または全件）。levelOrder の順に rng を消費する。
 	rng := rand.New(u.randNew(seed))
-	var finalCharts []domain.SourceChart
+	var finalCharts []domain.EnrichedChart
 	var finalLevelOrder []string
 	for _, level := range levelOrder {
 		charts, ok := byLevel[level]
@@ -146,9 +146,7 @@ func (u *PickUseCase) regenerate(ctx context.Context, pub domain.PublishedTable)
 			charts = charts[:pub.Pick.PerLevel]
 			sort.SliceStable(charts, func(i, j int) bool { return charts[i].Position < charts[j].Position })
 		}
-		for _, ec := range charts {
-			finalCharts = append(finalCharts, ec.SourceChart)
-		}
+		finalCharts = append(finalCharts, charts...)
 		finalLevelOrder = append(finalLevelOrder, level)
 	}
 

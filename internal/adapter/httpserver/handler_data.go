@@ -30,9 +30,10 @@ func newDataHandler(deps Deps) http.HandlerFunc {
 	}
 }
 
-// mergeChart は SourceChart.Raw をベースに level/md5/sha256/title/artist を上書きしてマップを返す。
+// mergeChart は EnrichedChart.Raw をベースに level/md5/sha256/title/artist を上書きしてマップを返す。
 // 表固有フィールド（url, url_diff, lr2_bmsid 等）はパススルーされる。
-func mergeChart(c domain.SourceChart) map[string]any {
+// is_owned / last_played_at は beatoraja 互換維持のため data.json には出力しない。
+func mergeChart(c domain.EnrichedChart) map[string]any {
 	out := make(map[string]any, len(c.Raw)+5)
 	for k, v := range c.Raw {
 		out[k] = v

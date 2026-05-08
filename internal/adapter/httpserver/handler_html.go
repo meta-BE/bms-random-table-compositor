@@ -1,7 +1,6 @@
 package httpserver
 
 import (
-	"context"
 	"errors"
 	"net/http"
 
@@ -43,7 +42,7 @@ func newHTMLHandler(deps Deps) http.HandlerFunc {
 			return
 		}
 
-		data := buildHTMLPageData(ctx, deps, pub, result)
+		data := buildHTMLPageData(pub, result)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")
 		if err := indexTemplate.Execute(w, data); err != nil {
@@ -53,11 +52,9 @@ func newHTMLHandler(deps Deps) http.HandlerFunc {
 }
 
 // buildHTMLPageData はピック結果をテンプレ向けに整形する。
-// OwnedOnly=false の所持色分けは Task 8 以降で ATTACH クエリ経由に置き換える。
-func buildHTMLPageData(_ context.Context, deps Deps, pub domain.PublishedTable, r domain.PickResult) htmlPageData {
-	// Task 8 で EnrichedChart の owned フラグを利用するまで空セットで色分けを無効化
-	ownedSet := map[string]struct{}{}
-
+// 各譜面の所持状態は EnrichedChart.IsOwned から読む (LoadCharts 時点で
+// SQL JOIN で確定済み)。OwnedOnly 公開表は全件 owned 扱いで表示する。
+func buildHTMLPageData(pub domain.PublishedTable, r domain.PickResult) htmlPageData {
 	levels := make([]htmlLevel, 0, len(r.LevelOrder))
 	for _, level := range r.LevelOrder {
 		var charts []htmlChart
@@ -65,7 +62,7 @@ func buildHTMLPageData(_ context.Context, deps Deps, pub domain.PublishedTable, 
 			if c.Level != level {
 				continue
 			}
-			_, owned := ownedSet[c.MD5]
+			owned := c.IsOwned
 			if pub.OwnedOnly {
 				owned = true
 			}

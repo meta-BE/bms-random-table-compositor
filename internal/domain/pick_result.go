@@ -7,7 +7,7 @@ import "time"
 type PickResult struct {
 	PublishedTableID string
 	GeneratedAt      time.Time
-	SeedKey          string        // per_request: nano 値の文字列、daily: YYYY-MM-DD、manual: 手動更新時刻 ISO8601
-	Charts           []SourceChart // ピック後・整列済み（レベル間 / レベル内）
-	LevelOrder       []string      // 1 曲以上残ったレベルのみ抽出済み（応答 header.json で使う）
+	SeedKey          string          // per_request: nano 値の文字列、daily: YYYY-MM-DD、manual: 手動更新時刻 ISO8601
+	Charts           []EnrichedChart // ピック後・整列済み (IsOwned/LastPlayedAt 付与)
+	LevelOrder       []string        // 1 曲以上残ったレベルのみ抽出済み（応答 header.json で使う）
 }

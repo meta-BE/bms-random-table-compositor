@@ -2,6 +2,7 @@ package httpserver_test
 
 import (
 	"context"
+	"database/sql"
 	"io"
 	"log/slog"
 	"net/http/httptest"
@@ -31,11 +32,12 @@ func (g *stubIDGen) New() string {
 
 // httpFixture は handler テストで使う Mux + 種データ。
 type httpFixture struct {
-	mux     *httptest.Server
-	pubUC   *usecase.PublishedTableUseCase
-	pickUC  *usecase.PickUseCase
-	srcRepo *persistence.SourceTableRepoSQL
-	pubRepo *persistence.PublishedTableRepoSQL
+	mux      *httptest.Server
+	pubUC    *usecase.PublishedTableUseCase
+	pickUC   *usecase.PickUseCase
+	srcRepo  *persistence.SourceTableRepoSQL
+	pubRepo  *persistence.PublishedTableRepoSQL
+	attacher *persistence.SongdataAttacher
 }
 
 func newHTTPFixture(t *testing.T) *httpFixture {
@@ -65,11 +67,12 @@ func newHTTPFixture(t *testing.T) *httpFixture {
 	t.Cleanup(srv.Close)
 
 	return &httpFixture{
-		mux:     srv,
-		pubUC:   pubUC,
-		pickUC:  pickUC,
-		srcRepo: srcRepo,
-		pubRepo: pubRepo,
+		mux:      srv,
+		pubUC:    pubUC,
+		pickUC:   pickUC,
+		srcRepo:  srcRepo,
+		pubRepo:  pubRepo,
+		attacher: attacher,
 	}
 }
 
@@ -98,4 +101,22 @@ func (f *httpFixture) seedPublished(t *testing.T, slug, sourceID string, mode do
 	})
 	require.NoError(t, err)
 	return id
+}
+
+// seedAttachedSongdata は temp dir に最小スキーマの songdata.db を作り attacher で ATTACH する。
+// テストで IsOwned 判定を検証するために使う。
+func (f *httpFixture) seedAttachedSongdata(t *testing.T, ownedMD5s ...string) {
+	t.Helper()
+	dir := t.TempDir()
+	songdataPath := filepath.Join(dir, "songdata.db")
+	src, err := sql.Open("sqlite", songdataPath)
+	require.NoError(t, err)
+	_, err = src.Exec(`CREATE TABLE song (md5 TEXT PRIMARY KEY)`)
+	require.NoError(t, err)
+	for _, m := range ownedMD5s {
+		_, err = src.Exec(`INSERT INTO song(md5) VALUES (?)`, m)
+		require.NoError(t, err)
+	}
+	require.NoError(t, src.Close())
+	require.NoError(t, f.attacher.Attach(context.Background(), songdataPath))
 }
