@@ -132,8 +132,8 @@
           <span>読み込み中…</span>
         </div>
       {:else}
-        <label class="form-control">
-          <div class="label"><span class="label-text">ポート番号</span></div>
+        <div class="form-control w-full">
+          <label class="label"><span class="label-text">ポート番号</span></label>
           <input
             class="input input-bordered input-sm w-40"
             type="number"
@@ -141,15 +141,15 @@
             max="65535"
             bind:value={cfg.port}
           />
-        </label>
+        </div>
 
-        <label class="form-control">
-          <div class="label"><span class="label-text">songdata.db のパス</span></div>
+        <div class="form-control w-full">
+          <label class="label"><span class="label-text">songdata.db のパス</span></label>
           <div class="join w-full">
             <input class="input input-bordered input-sm join-item flex-1" type="text" bind:value={cfg.songdataDbPath} />
             <button class="btn btn-sm join-item" type="button" on:click={pickPath}>参照…</button>
           </div>
-        </label>
+        </div>
 
         <div class="card-actions justify-end mt-2">
           <button class="btn btn-primary btn-sm" disabled={!dirty || saving} on:click={save}>

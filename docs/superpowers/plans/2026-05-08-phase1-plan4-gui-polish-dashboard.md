@@ -792,8 +792,8 @@ cat frontend/src/lib/tabs/ServerTab.svelte
           <span>読み込み中…</span>
         </div>
       {:else}
-        <label class="form-control">
-          <div class="label"><span class="label-text">ポート番号</span></div>
+        <div class="form-control w-full">
+          <label class="label"><span class="label-text">ポート番号</span></label>
           <input
             class="input input-bordered input-sm w-40"
             type="number"
@@ -801,15 +801,15 @@ cat frontend/src/lib/tabs/ServerTab.svelte
             max="65535"
             bind:value={cfg.port}
           />
-        </label>
+        </div>
 
-        <label class="form-control">
-          <div class="label"><span class="label-text">songdata.db のパス</span></div>
+        <div class="form-control w-full">
+          <label class="label"><span class="label-text">songdata.db のパス</span></label>
           <div class="join w-full">
             <input class="input input-bordered input-sm join-item flex-1" type="text" bind:value={cfg.songdataDbPath} />
             <button class="btn btn-sm join-item" type="button" on:click={pickPath}>参照…</button>
           </div>
-        </label>
+        </div>
 
         <div class="card-actions justify-end mt-2">
           <button class="btn btn-primary btn-sm" disabled={!dirty || saving} on:click={save}>
@@ -1457,12 +1457,12 @@ cat frontend/src/lib/tabs/PublishedTablesTab.svelte
     <div class="modal-box max-w-2xl">
       <h3 class="font-bold text-base">{formMode === 'create' ? '新規公開表' : '公開表を編集'}</h3>
       <div class="space-y-2 mt-2 text-sm">
-        <label class="form-control">
-          <div class="label py-1"><span class="label-text">表示名</span></div>
-          <input class="input input-bordered input-sm" bind:value={form.displayName} />
-        </label>
-        <label class="form-control">
-          <div class="label py-1"><span class="label-text">slug (URL に使われる)</span></div>
+        <div class="form-control w-full">
+          <label class="label py-1"><span class="label-text">表示名</span></label>
+          <input class="input input-bordered input-sm w-full" bind:value={form.displayName} />
+        </div>
+        <div class="form-control w-full">
+          <label class="label py-1"><span class="label-text">slug (URL に使われる)</span></label>
           <div class="join w-full">
             <input
               class="input input-bordered input-sm join-item flex-1"
@@ -1478,35 +1478,35 @@ cat frontend/src/lib/tabs/PublishedTablesTab.svelte
                slugStatus === 'duplicate' ? '既に使われています' : ''}
             </div>
           {/if}
-        </label>
-        <label class="form-control">
-          <div class="label py-1"><span class="label-text">シンボル (例: ★, ▲)</span></div>
+        </div>
+        <div class="form-control w-full">
+          <label class="label py-1"><span class="label-text">シンボル (例: ★, ▲)</span></label>
           <input class="input input-bordered input-sm w-32" bind:value={form.symbol} />
-        </label>
-        <label class="form-control">
-          <div class="label py-1"><span class="label-text">ソース表</span></div>
-          <select class="select select-bordered select-sm" bind:value={form.sourceTableId}>
+        </div>
+        <div class="form-control w-full">
+          <label class="label py-1"><span class="label-text">ソース表</span></label>
+          <select class="select select-bordered select-sm w-full" bind:value={form.sourceTableId}>
             {#each sources as s}
               <option value={s.id}>{s.displayName || s.name || s.inputUrl}</option>
             {/each}
           </select>
-        </label>
+        </div>
         <label class="label cursor-pointer justify-start gap-3">
           <input type="checkbox" class="checkbox checkbox-sm" bind:checked={form.ownedOnly} />
           <span class="label-text">所持譜面のみ表示</span>
         </label>
-        <label class="form-control">
-          <div class="label py-1"><span class="label-text">レベル毎の件数 (0=無制限)</span></div>
+        <div class="form-control w-full">
+          <label class="label py-1"><span class="label-text">レベル毎の件数 (0=無制限)</span></label>
           <input class="input input-bordered input-sm w-32" type="number" min="0" bind:value={form.pickPerLevel} />
-        </label>
-        <label class="form-control">
-          <div class="label py-1"><span class="label-text">更新モード</span></div>
-          <select class="select select-bordered select-sm" bind:value={form.refreshMode}>
+        </div>
+        <div class="form-control w-full">
+          <label class="label py-1"><span class="label-text">更新モード</span></label>
+          <select class="select select-bordered select-sm w-full" bind:value={form.refreshMode}>
             <option value="per_request">リクエスト毎 (毎回再生成)</option>
             <option value="daily">日次 (同一日付内で固定)</option>
             <option value="manual">手動 (再ピックボタンまで固定)</option>
           </select>
-        </label>
+        </div>
       </div>
       {#if formError}<div class="alert alert-error text-sm mt-3">{formError}</div>{/if}
       <div class="modal-action">
