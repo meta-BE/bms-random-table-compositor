@@ -125,7 +125,9 @@ func TestHandlerHTML_ColumnsAndLinks(t *testing.T) {
 		},
 	}, time.Now()))
 
-	_ = fx.seedPublished(t, "html-cols", srcID, domain.RefreshModePerRequest, 0, false)
+	// pub.Symbol を source.Symbol("sl") と区別するため "X" にする。
+	// 行頭セルは source 由来 ("sl0")、<h2> 見出しは pub 由来 ("X0") になる想定。
+	_ = fx.seedPublished(t, "html-cols", srcID, domain.RefreshModePerRequest, 0, false, "X")
 
 	resp, err := http.Get(fx.mux.URL + "/html-cols")
 	require.NoError(t, err)
@@ -139,8 +141,10 @@ func TestHandlerHTML_ColumnsAndLinks(t *testing.T) {
 	// 表セルのテキストとして出ることだけ禁止する)
 	assert.NotContains(t, bodyStr, ">aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa<")
 
-	// レベル列 (Symbol+Level)
+	// レベル列 (source.Symbol + Level)
 	assert.Contains(t, bodyStr, ">sl0<")
+	// <h2> 見出しは pub.Symbol + Level
+	assert.Contains(t, bodyStr, ">X0 (")
 
 	// Full 行: タイトルが LR2IR リンク, アーティストが url リンク, 差分DLリンク
 	assert.Contains(t, bodyStr, `href="http://www.dream-pro.info/~lavalse/LR2IR/search.cgi?mode=ranking&amp;bmsmd5=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"`)

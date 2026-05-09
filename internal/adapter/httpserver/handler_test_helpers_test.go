@@ -92,11 +92,16 @@ func (f *httpFixture) seedSourceWithCharts(t *testing.T, id, name string, levelO
 	}, time.Now()))
 }
 
-// seedPublished は公開表を作成する。
-func (f *httpFixture) seedPublished(t *testing.T, slug, sourceID string, mode domain.RefreshMode, perLevel int, ownedOnly bool) string {
+// seedPublished は公開表を作成する。symbolOverride を渡すと Symbol を指定値に上書きする
+// (省略時は "sl"; 既存テストとの後方互換のため可変引数)。
+func (f *httpFixture) seedPublished(t *testing.T, slug, sourceID string, mode domain.RefreshMode, perLevel int, ownedOnly bool, symbolOverride ...string) string {
 	t.Helper()
+	symbol := "sl"
+	if len(symbolOverride) > 0 {
+		symbol = symbolOverride[0]
+	}
 	id, err := f.pubUC.Create(context.Background(), usecase.CreatePublishedTableInput{
-		Slug: slug, DisplayName: slug, Symbol: "sl",
+		Slug: slug, DisplayName: slug, Symbol: symbol,
 		SourceTableID: sourceID, OwnedOnly: ownedOnly, PickPerLevel: perLevel, RefreshMode: mode,
 	})
 	require.NoError(t, err)

@@ -263,6 +263,27 @@ func TestSourceTableRepoSQL_LoadCharts_OrderByPosition(t *testing.T) {
 	require.Equal(t, float64(7), out[0].Raw["lr2_bmsid"])
 }
 
+// LoadCharts は source_table.symbol を JOIN で取得し各譜面に載せる
+// (v2 で複数ソース表を1公開表に合成する際、譜面単位で symbol を保持するため)。
+func TestSourceTableRepoSQL_LoadCharts_PopulatesSymbolFromSourceTable(t *testing.T) {
+	r := setupSourceTableRepo(t)
+	ctx := context.Background()
+	_, _ = r.Create(ctx, domain.SourceTable{
+		ID: "S", InputURL: "u", InputKind: domain.InputKindHTML, LastFetchStatus: domain.FetchStatusNever,
+	})
+	require.NoError(t, r.SaveFetched(ctx, "S", port.FetchedTable{
+		Header: domain.BMSTableHeader{Name: "n", Symbol: "sl", LevelOrder: []string{"0"}},
+		Charts: []domain.SourceChart{
+			{Position: 0, MD5: "a", Level: "0", Title: "T", Raw: map[string]any{"md5": "a"}},
+		},
+	}, time.Now()))
+
+	out, err := r.LoadCharts(ctx, "S", port.ChartQuery{})
+	require.NoError(t, err)
+	require.Len(t, out, 1)
+	require.Equal(t, "sl", out[0].Symbol, "Symbol は source_table から JOIN で取得される")
+}
+
 func TestSourceTableRepoSQL_LoadCharts_EmptyForNoSource(t *testing.T) {
 	r := setupSourceTableRepo(t)
 	out, err := r.LoadCharts(context.Background(), "missing", port.ChartQuery{})
