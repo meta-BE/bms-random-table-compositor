@@ -135,8 +135,9 @@ func TestHandlerHTML_ColumnsAndLinks(t *testing.T) {
 
 	// md5 セル class が出ないこと
 	assert.NotContains(t, bodyStr, `class="md5"`)
-	// 生 md5 文字列が表示されないこと
-	assert.NotContains(t, bodyStr, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	// md5 がセル本文として表示されないこと (LR2IR リンクの href 内に出るのは OK、
+	// 表セルのテキストとして出ることだけ禁止する)
+	assert.NotContains(t, bodyStr, ">aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa<")
 
 	// レベル列 (Symbol+Level)
 	assert.Contains(t, bodyStr, ">sl0<")

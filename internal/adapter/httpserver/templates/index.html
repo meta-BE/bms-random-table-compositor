@@ -11,11 +11,17 @@ h1 { font-size: 1.4em; margin: 0 0 8px; }
 .refresh { margin-bottom: 16px; }
 .refresh button { padding: 6px 14px; cursor: pointer; }
 h2 { font-size: 1.1em; margin: 24px 0 4px; border-bottom: 1px solid #ccc; padding-bottom: 2px; }
-table { border-collapse: collapse; width: 100%; font-size: 0.9em; }
-th, td { padding: 4px 8px; border-bottom: 1px solid #eee; text-align: left; }
+table.chart { table-layout: fixed; border-collapse: collapse; width: 100%; font-size: 0.9em; }
+table.chart col.col-level  { width: 5em; }
+table.chart col.col-title  { width: auto; }
+table.chart col.col-artist { width: 20em; }
+table.chart col.col-diff   { width: 7em; }
+table.chart th, table.chart td { padding: 4px 8px; border-bottom: 1px solid #eee; text-align: left; line-height: 1.4; vertical-align: middle; }
+table.chart td.title-cell { white-space: normal; word-break: break-word; }
+table.chart td.other-cell { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+table.chart a { color: inherit; text-decoration: underline; }
 tr.owned td { background: #eaf6ea; }
 tr.unowned td { color: #999; }
-.md5 { font-family: monospace; font-size: 0.8em; color: #888; }
 .empty { color: #999; font-style: italic; padding: 12px 0; }
 </style>
 </head>
@@ -30,11 +36,20 @@ tr.unowned td { color: #999; }
   {{if .Levels}}
     {{range .Levels}}
       <h2>{{$.Symbol}}{{.Level}} ({{len .Charts}}曲)</h2>
-      <table>
+      <table class="chart">
+        <colgroup>
+          <col class="col-level">
+          <col class="col-title">
+          <col class="col-artist">
+          <col class="col-diff">
+        </colgroup>
         <tbody>
         {{range .Charts}}
           <tr class="{{if .Owned}}owned{{else}}unowned{{end}}">
-            <td>{{.Title}}</td><td>{{.Artist}}</td><td class="md5">{{.MD5}}</td>
+            <td class="other-cell">{{.Level}}</td>
+            <td class="title-cell">{{if .LR2IRURL}}<a href="{{.LR2IRURL}}" target="_blank" rel="noopener">{{.Title}}</a>{{else}}{{.Title}}{{end}}</td>
+            <td class="other-cell">{{if .URL}}<a href="{{.URL}}" target="_blank" rel="noopener">{{.Artist}}</a>{{else}}{{.Artist}}{{end}}</td>
+            <td class="other-cell">{{if .URLDiff}}<a href="{{.URLDiff}}" target="_blank" rel="noopener">差分DL</a>{{end}}</td>
           </tr>
         {{end}}
         </tbody>
