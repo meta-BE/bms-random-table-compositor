@@ -24,12 +24,20 @@ type htmlLevel struct {
 	Charts []htmlChart
 }
 
+// htmlChart は1曲分の表示用フィールド。
+// Level は Symbol+Level を結合済みの文字列 (例: "sl0", "⭐3")。
+// LR2IRURL/URL/URLDiff は空文字列のとき該当リンクを描画しない。
 type htmlChart struct {
-	Title  string
-	Artist string
-	MD5    string
-	Owned  bool
+	Level    string
+	Title    string
+	Artist   string
+	LR2IRURL string
+	URL      string
+	URLDiff  string
+	Owned    bool
 }
+
+const lr2irRankingURLPrefix = "http://www.dream-pro.info/~lavalse/LR2IR/search.cgi?mode=ranking&bmsmd5="
 
 // newHTMLHandler は GET /{slug} ハンドラ。
 func newHTMLHandler(deps Deps) http.HandlerFunc {
@@ -52,8 +60,7 @@ func newHTMLHandler(deps Deps) http.HandlerFunc {
 }
 
 // buildHTMLPageData はピック結果をテンプレ向けに整形する。
-// 各譜面の所持状態は EnrichedChart.IsOwned から読む (LoadCharts 時点で
-// SQL JOIN で確定済み)。OwnedOnly 公開表は全件 owned 扱いで表示する。
+// 各譜面の所持状態は EnrichedChart.IsOwned から読む。OwnedOnly 公開表は全件 owned 扱い。
 func buildHTMLPageData(pub domain.PublishedTable, r domain.PickResult) htmlPageData {
 	levels := make([]htmlLevel, 0, len(r.LevelOrder))
 	for _, level := range r.LevelOrder {
@@ -67,7 +74,13 @@ func buildHTMLPageData(pub domain.PublishedTable, r domain.PickResult) htmlPageD
 				owned = true
 			}
 			charts = append(charts, htmlChart{
-				Title: c.Title, Artist: c.Artist, MD5: c.MD5, Owned: owned,
+				Level:    pub.Symbol + level,
+				Title:    c.Title,
+				Artist:   c.Artist,
+				LR2IRURL: lr2irURL(c.MD5),
+				URL:      rawString(c.Raw, "url"),
+				URLDiff:  rawString(c.Raw, "url_diff"),
+				Owned:    owned,
 			})
 		}
 		if len(charts) == 0 {
@@ -84,6 +97,29 @@ func buildHTMLPageData(pub domain.PublishedTable, r domain.PickResult) htmlPageD
 		IsManualMode: pub.Pick.RefreshMode == domain.RefreshModeManual,
 		Levels:       levels,
 	}
+}
+
+// lr2irURL は md5 が非空のときのみ LR2IR ranking URL を返す。
+// md5 は16進固定なので URL エスケープ不要。
+func lr2irURL(md5 string) string {
+	if md5 == "" {
+		return ""
+	}
+	return lr2irRankingURLPrefix + md5
+}
+
+// rawString は data.json パススルーフィールドから安全に文字列を取り出す。
+// キー欠如・型不一致・nil はすべて "" を返す。
+func rawString(raw map[string]any, key string) string {
+	v, ok := raw[key]
+	if !ok {
+		return ""
+	}
+	s, ok := v.(string)
+	if !ok {
+		return ""
+	}
+	return s
 }
 
 // handleHTMLError は usecase の sentinel error を HTTP ステータスに変換する。
