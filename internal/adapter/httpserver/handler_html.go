@@ -73,8 +73,14 @@ func buildHTMLPageData(pub domain.PublishedTable, r domain.PickResult) htmlPageD
 			if pub.OwnedOnly {
 				owned = true
 			}
+			// 行頭セルは譜面単位 symbol (v2 で複数ソース合成時に区別するため)。
+			// SourceChart.Symbol が空の場合 (fetcher 経由構築など) は pub.Symbol で代替。
+			symbol := c.Symbol
+			if symbol == "" {
+				symbol = pub.Symbol
+			}
 			charts = append(charts, htmlChart{
-				Level:    pub.Symbol + level,
+				Level:    symbol + level,
 				Title:    c.Title,
 				Artist:   c.Artist,
 				LR2IRURL: lr2irURL(c.MD5),
