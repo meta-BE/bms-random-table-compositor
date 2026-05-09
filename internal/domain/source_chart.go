@@ -5,6 +5,7 @@ package domain
 type SourceChart struct {
 	SourceID string
 	Position int
+	Symbol   string // ソース表側の symbol (LoadCharts 経由で JOIN 入手、fetcher 経由構築時は空)
 	MD5      string
 	SHA256   string
 	Level    string
