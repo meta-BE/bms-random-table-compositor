@@ -26,7 +26,7 @@ VERSION := $(shell \
 LDFLAGS := -X main.version=$(VERSION)
 
 dev:
-	wails dev
+	wails dev -extensions go,html -reloaddirs internal/adapter/httpserver/templates
 
 build:
 	wails build -ldflags "$(LDFLAGS)"
