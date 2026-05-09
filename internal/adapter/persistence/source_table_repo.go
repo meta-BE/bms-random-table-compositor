@@ -282,10 +282,11 @@ func (r *SourceTableRepoSQL) loadChartsAttached(
 	}
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT
-		  c.position, c.md5, c.sha256, c.level, c.title, c.artist, c.raw_json,
+		  c.position, t.symbol, c.md5, c.sha256, c.level, c.title, c.artist, c.raw_json,
 		  EXISTS(SELECT 1 FROM sd.song s WHERE s.md5 = c.md5)        AS is_owned,
 		  NULL                                                        AS last_played_at
 		FROM source_table_chart c
+		JOIN source_table t ON t.id = c.source_id
 		WHERE c.source_id = ?
 		  AND (? = 0 OR EXISTS (SELECT 1 FROM sd.song s WHERE s.md5 = c.md5))
 		ORDER BY c.position ASC`,
@@ -302,9 +303,10 @@ func (r *SourceTableRepoSQL) loadChartsBare(
 	ctx context.Context, sourceID string,
 ) ([]domain.EnrichedChart, error) {
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT c.position, c.md5, c.sha256, c.level, c.title, c.artist, c.raw_json,
+		SELECT c.position, t.symbol, c.md5, c.sha256, c.level, c.title, c.artist, c.raw_json,
 		       0 AS is_owned, NULL AS last_played_at
 		FROM source_table_chart c
+		JOIN source_table t ON t.id = c.source_id
 		WHERE c.source_id = ?
 		ORDER BY c.position ASC`,
 		sourceID,
@@ -326,7 +328,7 @@ func scanEnrichedRows(rows *sql.Rows, sourceID string) ([]domain.EnrichedChart, 
 			lastPlayedAt sql.NullString // 現状は常に NULL、v2 でカラム化予定
 		)
 		if err := rows.Scan(
-			&c.Position, &c.MD5, &c.SHA256, &c.Level, &c.Title, &c.Artist,
+			&c.Position, &c.Symbol, &c.MD5, &c.SHA256, &c.Level, &c.Title, &c.Artist,
 			&rawJSON, &isOwned, &lastPlayedAt,
 		); err != nil {
 			return nil, err
