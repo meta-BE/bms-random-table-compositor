@@ -84,3 +84,78 @@ func TestHTMLHandler_OwnedOnlyFalse_ColorsByAttachedSongdata(t *testing.T) {
 	assert.Contains(t, bodyStr, `class="owned"`)
 	assert.Contains(t, bodyStr, `class="unowned"`)
 }
+
+func TestHandlerHTML_ColumnsAndLinks(t *testing.T) {
+	fx := newHTTPFixture(t)
+
+	srcID := "01JSRC0HTML000000000COL"
+	_, err := fx.srcRepo.Create(context.Background(), domain.SourceTable{
+		ID: srcID, InputURL: "https://example.com/t.html",
+		InputKind: domain.InputKindHTML, DisplayName: "T", Name: "T",
+		LevelOrder:      []string{"0"},
+		LastFetchStatus: domain.FetchStatusOK,
+	})
+	require.NoError(t, err)
+	require.NoError(t, fx.srcRepo.SaveFetched(context.Background(), srcID, port.FetchedTable{
+		Header: domain.BMSTableHeader{Name: "T", Symbol: "sl", LevelOrder: []string{"0"}},
+		Charts: []domain.SourceChart{
+			{
+				Position: 0, MD5: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+				Level: "0", Title: "Full", Artist: "ArtFull",
+				Raw: map[string]any{
+					"md5":      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+					"url":      "https://example.com/song-a.zip",
+					"url_diff": "https://example.com/diff-a.zip",
+				},
+			},
+			{
+				Position: 1, MD5: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+				Level: "0", Title: "NoUrl", Artist: "ArtNoUrl",
+				Raw: map[string]any{
+					"md5":      "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+					"url":      "",
+					"url_diff": "",
+				},
+			},
+			{
+				Position: 2, MD5: "",
+				Level: "0", Title: "NoMD5", Artist: "ArtNoMD5",
+				Raw: map[string]any{},
+			},
+		},
+	}, time.Now()))
+
+	_ = fx.seedPublished(t, "html-cols", srcID, domain.RefreshModePerRequest, 0, false)
+
+	resp, err := http.Get(fx.mux.URL + "/html-cols")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	bodyStr := string(body)
+
+	// md5 セル class が出ないこと
+	assert.NotContains(t, bodyStr, `class="md5"`)
+	// 生 md5 文字列が表示されないこと
+	assert.NotContains(t, bodyStr, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+
+	// レベル列 (Symbol+Level)
+	assert.Contains(t, bodyStr, ">sl0<")
+
+	// Full 行: タイトルが LR2IR リンク, アーティストが url リンク, 差分DLリンク
+	assert.Contains(t, bodyStr, `href="http://www.dream-pro.info/~lavalse/LR2IR/search.cgi?mode=ranking&amp;bmsmd5=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"`)
+	assert.Contains(t, bodyStr, `>Full<`)
+	assert.Contains(t, bodyStr, `href="https://example.com/song-a.zip"`)
+	assert.Contains(t, bodyStr, `>ArtFull<`)
+	assert.Contains(t, bodyStr, `href="https://example.com/diff-a.zip"`)
+	assert.Contains(t, bodyStr, `>差分DL<`)
+
+	// NoUrl 行: タイトルは LR2IR リンクあり、アーティストは平文、差分セルは空
+	assert.Contains(t, bodyStr, `href="http://www.dream-pro.info/~lavalse/LR2IR/search.cgi?mode=ranking&amp;bmsmd5=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"`)
+	// アーティスト ArtNoUrl はリンクで囲まれていない: その直前に <a href= が無いことを大まかにチェック
+	assert.Contains(t, bodyStr, "ArtNoUrl")
+	assert.NotContains(t, bodyStr, `<a href="">`)
+
+	// NoMD5 行: タイトルが LR2IR リンクで囲まれない
+	// (md5 が空のためリンク URL は生成されない)
+	assert.Contains(t, bodyStr, "NoMD5")
+}
