@@ -63,8 +63,8 @@ type PublishedTableLevel struct {
     PublishedTableID  string
     Name              string // 公開レベル表示名（例: "5", "Lv.5", "中級", "★5-6 mix"）
     SortOrder         int
-    PerMappingPick    int  // 各マッピングからの最低保証ピック数 m (>= 0)
-    TotalPick         int  // 公開レベル全体の目標合計ピック数 n (>= 0)
+    PerMappingPick    int  // 「レベルごとピック曲数」m: 各マッピングからの最低保証ピック数 (>= 0)
+    TotalPick         int  // 「全体ピック曲数」n: 公開レベル全体の目標合計ピック数 (>= 0)
     Mappings          []PublishedTableLevelMapping // SortOrder 昇順
 }
 
@@ -291,14 +291,21 @@ func (u *PublishedTableUseCase) ApplyBulkPickConfig(ctx context.Context, publish
 [公開表メタ情報パネル] DisplayName / Slug / Symbol / OwnedOnly / RefreshMode
 
 [全レベル一括適用パネル]
-  m: [  ] / n: [  ]  [全レベルに適用]
+  レベルごとピック曲数 (m): [  ]
+  全体ピック曲数 (n):       [  ]
+  [全レベルに適用]
+  ※ ソース表レベル 1 つあたり m 曲を最低保証し、合計が n 曲になるよう全体プールから補填します
+    （n=0 または m × マッピング数 ≥ n のときは補填なし）
 
 [公開レベル一覧テーブル]
-  | 並び | 公開レベル名 | マッピング (chip 列挙)              | m  | n  | [操作] |
-  | ▲▼   | "5"          | [stella★5 x] [satellite sl5 x] [+]  | 2  | 5  | [削除]  |
-  | ▲▼   | "5-6"        | [stella★5 x] [stella★6 x] [+]       | 1  | 4  | [削除]  |
+  | 並び | 公開レベル名 | マッピング (chip 列挙)              | m * | n * | [操作] |
+  | ▲▼   | "5"          | [stella★5 x] [satellite sl5 x] [+]  |  2  |  5  | [削除]  |
+  | ▲▼   | "5-6"        | [stella★5 x] [stella★6 x] [+]       |  1  |  4  | [削除]  |
   ...
   [+ 公開レベル追加]
+  * 列ヘッダーは表示幅の都合で略記。
+    m = レベルごとピック曲数（マッピング 1 件あたり）/ n = 全体ピック曲数（公開レベル合計目標）
+    マウスホバーで tooltip、または列ヘッダー直下の凡例行に full label を表示。
 ```
 
 - 公開レベルの並び替えは `▲▼` ボタンで `SortOrder` を入れ替え（drag-and-drop は v3）
@@ -319,10 +326,10 @@ func (u *PublishedTableUseCase) ApplyBulkPickConfig(ctx context.Context, publish
 |-----------------------------------|-----------------------------------------------------|--------|
 | `Slug`                            | 既存と同じ（UNIQUE / 半角英数記号）                 | エラー |
 | `Level.Name`                      | 同一公開表内で重複不可                              | エラー |
-| `Level.PerMappingPick (m)`        | `>= 0`                                              | エラー |
-| `Level.TotalPick (n)`             | `>= 0`                                              | エラー |
+| `Level.PerMappingPick (m, レベルごとピック曲数)` | `>= 0`                              | エラー |
+| `Level.TotalPick (n, 全体ピック曲数)`           | `>= 0`                              | エラー |
 | `Mapping (source_table, source_level)` | 同一公開レベル内で重複不可                     | エラー |
-| `m * len(Mappings) > n` のレベル  | 警告（保存はブロックしない）                        | 警告  |
+| `m * len(Mappings) > n` のレベル  | 「合計が n を超過するため n は無視されます」と表記   | 警告  |
 | `Mapping` 0 件のレベル            | 警告（ピック結果が空になる）                        | 警告  |
 
 ## 10. テスト方針
