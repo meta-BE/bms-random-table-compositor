@@ -5,7 +5,7 @@ Phase 1 MVP (v0.1.0, 2026-05-08) 完了後の機能候補。
 
 ## v2 機能
 
-- **複数ソース表合成**: 複数の難易度表を 1 つの公開表にマージ
+- ✅ **複数ソース表合成** (v0.2.0 で実装): 複数の難易度表を 1 つの公開表にマージ。詳細: `docs/superpowers/specs/2026-05-10-multi-source-table-composition-design.md`
 - **ピックアルゴリズム B/C**: 現状の per_request / daily / manual に加える新方式
 - **最終プレイ日時優先**: `scorelog.db` 等を参照してピックに反映
 - **ETag 304 本格運用**: HTTP キャッシュ最適化
