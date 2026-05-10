@@ -15,4 +15,7 @@ var (
 	ErrSourceTableNotFound    = errors.New("ソース表が見つかりません")
 	ErrServerAlreadyRunning   = errors.New("サーバは既に起動しています")
 	ErrServerNotRunning       = errors.New("サーバは起動していません")
+	ErrDuplicateLevelName     = errors.New("公開レベル名が重複しています")
+	ErrDuplicateMapping       = errors.New("同一公開レベル内でマッピングが重複しています")
+	ErrEmptyMappings          = errors.New("公開レベルにマッピングがありません")
 )

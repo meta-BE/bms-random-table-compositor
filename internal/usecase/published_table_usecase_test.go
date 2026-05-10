@@ -3,6 +3,7 @@ package usecase_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"sync"
@@ -107,20 +108,14 @@ func (r *fakePublishedRepo) SlugExists(_ context.Context, slug string, excludeID
 }
 
 // pubIDs は PublishedTableUseCase テスト用の決定論的 ID リスト。
-// 既存の fakeIDGen (ids []string ベース) を再利用するため、十分な件数を事前に積む。
+// Create 1 回で publishedTable + level 数 + mapping 数の ID を消費するため、
+// 余裕を持った件数を生成しておく。
 func pubIDs() []string {
-	return []string{
-		"PUB000000000000000000001",
-		"PUB000000000000000000002",
-		"PUB000000000000000000003",
-		"PUB000000000000000000004",
-		"PUB000000000000000000005",
-		"PUB000000000000000000006",
-		"PUB000000000000000000007",
-		"PUB000000000000000000008",
-		"PUB000000000000000000009",
-		"PUB000000000000000000010",
+	out := make([]string, 0, 200)
+	for i := 1; i <= 200; i++ {
+		out = append(out, fmt.Sprintf("PUB%020d", i))
 	}
+	return out
 }
 
 func newPublishedUC(t *testing.T, sourceRepo *fakeSourceRepo) (*usecase.PublishedTableUseCase, *fakePublishedRepo) {
@@ -141,6 +136,27 @@ func seedSource(t *testing.T, repo *fakeSourceRepo, id, name, displayName string
 	require.NoError(t, err)
 }
 
+// seedSourceWithLevels は LevelOrder 付きでソース表を仕込む。CreateFromSourceTable のテスト用。
+func seedSourceWithLevels(t *testing.T, repo *fakeSourceRepo, id, name, displayName string, levels []string) {
+	t.Helper()
+	_, err := repo.Create(context.Background(), domain.SourceTable{
+		ID: id, InputURL: "https://example.com/" + id, InputKind: domain.InputKindHTML,
+		Name: name, DisplayName: displayName, LevelOrder: levels,
+		LastFetchStatus: domain.FetchStatusOK,
+	})
+	require.NoError(t, err)
+}
+
+// singleLevelInput は SourceTableID 1 件 + SourceLevel 1 件のシンプルな Levels を作るヘルパ。
+func singleLevelInput(sourceID, name, sourceLevel string) []usecase.PublishedTableLevelInput {
+	return []usecase.PublishedTableLevelInput{{
+		Name: name,
+		Mappings: []usecase.PublishedTableLevelMappingInput{
+			{SourceTableID: sourceID, SourceLevel: sourceLevel},
+		},
+	}}
+}
+
 func TestPublishedTableUseCase_Create_Success(t *testing.T) {
 	src := newFakeSourceRepo()
 	seedSource(t, src, "01JSRC0000000000000000A", "Satellite", "")
@@ -148,9 +164,14 @@ func TestPublishedTableUseCase_Create_Success(t *testing.T) {
 
 	id, err := uc.Create(context.Background(), usecase.CreatePublishedTableInput{
 		Slug: "sl-mix", DisplayName: "SL Mix", Symbol: "sl",
-		SourceTableID: "01JSRC0000000000000000A",
-		OwnedOnly:     true, PickPerLevel: 5,
+		OwnedOnly:   true,
 		RefreshMode: domain.RefreshModeDaily,
+		Levels: []usecase.PublishedTableLevelInput{{
+			Name: "5", PerMappingPick: 5, TotalPick: 5,
+			Mappings: []usecase.PublishedTableLevelMappingInput{
+				{SourceTableID: "01JSRC0000000000000000A", SourceLevel: "5"},
+			},
+		}},
 	})
 	require.NoError(t, err)
 	require.NotEmpty(t, id)
@@ -159,7 +180,12 @@ func TestPublishedTableUseCase_Create_Success(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "sl-mix", got.Slug)
 	require.True(t, got.OwnedOnly)
-	require.Equal(t, 5, got.Pick.PerLevel)
+	require.Equal(t, domain.RefreshModeDaily, got.Pick.RefreshMode)
+	require.Len(t, got.Levels, 1)
+	require.Equal(t, "5", got.Levels[0].Name)
+	require.Equal(t, 5, got.Levels[0].PerMappingPick)
+	require.Equal(t, 5, got.Levels[0].TotalPick)
+	require.Len(t, got.Levels[0].Mappings, 1)
 }
 
 func TestPublishedTableUseCase_Create_RejectsInvalidSlug(t *testing.T) {
@@ -177,8 +203,8 @@ func TestPublishedTableUseCase_Create_RejectsInvalidSlug(t *testing.T) {
 	} {
 		_, err := uc.Create(context.Background(), usecase.CreatePublishedTableInput{
 			Slug: bad, DisplayName: "X",
-			SourceTableID: "01JSRC0000000000000000B",
-			RefreshMode:   domain.RefreshModePerRequest,
+			RefreshMode: domain.RefreshModePerRequest,
+			Levels:      singleLevelInput("01JSRC0000000000000000B", "5", "5"),
 		})
 		require.True(t, errors.Is(err, usecase.ErrSlugInvalidFormat),
 			"slug=%q expected ErrSlugInvalidFormat, got %v", bad, err)
@@ -193,8 +219,8 @@ func TestPublishedTableUseCase_Create_RejectsReservedSlug(t *testing.T) {
 	for _, reserved := range []string{"_admin", "_health", "_metrics", "_refresh", "static", "assets"} {
 		_, err := uc.Create(context.Background(), usecase.CreatePublishedTableInput{
 			Slug: reserved, DisplayName: "X",
-			SourceTableID: "01JSRC0000000000000000C",
-			RefreshMode:   domain.RefreshModePerRequest,
+			RefreshMode: domain.RefreshModePerRequest,
+			Levels:      singleLevelInput("01JSRC0000000000000000C", "5", "5"),
 		})
 		require.True(t, errors.Is(err, usecase.ErrSlugReserved) || errors.Is(err, usecase.ErrSlugInvalidFormat),
 			"slug=%q expected reserved or invalid, got %v", reserved, err)
@@ -205,10 +231,11 @@ func TestPublishedTableUseCase_Create_RejectsUnknownSourceTable(t *testing.T) {
 	src := newFakeSourceRepo()
 	uc, _ := newPublishedUC(t, src)
 
+	// Mappings.SourceTableID が未知の場合 ErrSourceTableNotFound。
 	_, err := uc.Create(context.Background(), usecase.CreatePublishedTableInput{
 		Slug: "ok-slug", DisplayName: "X",
-		SourceTableID: "01JSRC0000000000000000Z",
-		RefreshMode:   domain.RefreshModePerRequest,
+		RefreshMode: domain.RefreshModePerRequest,
+		Levels:      singleLevelInput("01JSRC0000000000000000Z", "5", "5"),
 	})
 	require.True(t, errors.Is(err, usecase.ErrSourceTableNotFound))
 }
@@ -220,8 +247,8 @@ func TestPublishedTableUseCase_Create_RejectsInvalidRefreshMode(t *testing.T) {
 
 	_, err := uc.Create(context.Background(), usecase.CreatePublishedTableInput{
 		Slug: "ok-slug", DisplayName: "X",
-		SourceTableID: "01JSRC0000000000000000D",
-		RefreshMode:   domain.RefreshMode("hourly"),
+		RefreshMode: domain.RefreshMode("hourly"),
+		Levels:      singleLevelInput("01JSRC0000000000000000D", "5", "5"),
 	})
 	require.True(t, errors.Is(err, usecase.ErrInvalidRefreshMode))
 }
@@ -233,9 +260,13 @@ func TestPublishedTableUseCase_Create_RejectsNegativePickPerLevel(t *testing.T) 
 
 	_, err := uc.Create(context.Background(), usecase.CreatePublishedTableInput{
 		Slug: "ok-slug", DisplayName: "X",
-		SourceTableID: "01JSRC0000000000000000E",
-		PickPerLevel:  -1,
-		RefreshMode:   domain.RefreshModePerRequest,
+		RefreshMode: domain.RefreshModePerRequest,
+		Levels: []usecase.PublishedTableLevelInput{{
+			Name: "5", PerMappingPick: -1,
+			Mappings: []usecase.PublishedTableLevelMappingInput{
+				{SourceTableID: "01JSRC0000000000000000E", SourceLevel: "5"},
+			},
+		}},
 	})
 	require.True(t, errors.Is(err, usecase.ErrInvalidPickPerLevel))
 }
@@ -247,14 +278,14 @@ func TestPublishedTableUseCase_Create_DuplicateSlugFails(t *testing.T) {
 
 	_, err := uc.Create(context.Background(), usecase.CreatePublishedTableInput{
 		Slug: "dup", DisplayName: "A",
-		SourceTableID: "01JSRC0000000000000000F",
-		RefreshMode:   domain.RefreshModePerRequest,
+		RefreshMode: domain.RefreshModePerRequest,
+		Levels:      singleLevelInput("01JSRC0000000000000000F", "5", "5"),
 	})
 	require.NoError(t, err)
 	_, err = uc.Create(context.Background(), usecase.CreatePublishedTableInput{
 		Slug: "dup", DisplayName: "B",
-		SourceTableID: "01JSRC0000000000000000F",
-		RefreshMode:   domain.RefreshModePerRequest,
+		RefreshMode: domain.RefreshModePerRequest,
+		Levels:      singleLevelInput("01JSRC0000000000000000F", "5", "5"),
 	})
 	require.True(t, errors.Is(err, usecase.ErrSlugDuplicated))
 }
@@ -265,8 +296,8 @@ func TestPublishedTableUseCase_ValidateSlug(t *testing.T) {
 	uc, _ := newPublishedUC(t, src)
 	id, err := uc.Create(context.Background(), usecase.CreatePublishedTableInput{
 		Slug: "taken", DisplayName: "X",
-		SourceTableID: "01JSRC00000000000000010",
-		RefreshMode:   domain.RefreshModePerRequest,
+		RefreshMode: domain.RefreshModePerRequest,
+		Levels:      singleLevelInput("01JSRC00000000000000010", "5", "5"),
 	})
 	require.NoError(t, err)
 
@@ -304,17 +335,17 @@ func TestPublishedTableUseCase_SuggestSlugFromSource_AppendsSuffixOnCollision(t 
 	seedSource(t, src, "01JSRC00000000000000020", "Satellite", "")
 	uc, repo := newPublishedUC(t, src)
 	// 既に satellite と satellite-2 が使われているケース
-	require.NoError(t, addRow(repo, "PUBA", "satellite", "01JSRC00000000000000020"))
-	require.NoError(t, addRow(repo, "PUBB", "satellite-2", "01JSRC00000000000000020"))
+	require.NoError(t, addRow(repo, "PUBA", "satellite"))
+	require.NoError(t, addRow(repo, "PUBB", "satellite-2"))
 
 	got, err := uc.SuggestSlugFromSource(context.Background(), "01JSRC00000000000000020")
 	require.NoError(t, err)
 	require.Equal(t, "satellite-3", got)
 }
 
-func addRow(repo *fakePublishedRepo, id, slug, sourceID string) error {
+func addRow(repo *fakePublishedRepo, id, slug string) error {
 	_, err := repo.Create(context.Background(), domain.PublishedTable{
-		ID: id, Slug: slug, DisplayName: slug, SourceTableID: sourceID,
+		ID: id, Slug: slug, DisplayName: slug,
 		Pick: domain.PickConfig{RefreshMode: domain.RefreshModePerRequest},
 	})
 	return err
@@ -326,14 +357,14 @@ func TestPublishedTableUseCase_Update_ChecksSlug(t *testing.T) {
 	uc, _ := newPublishedUC(t, src)
 	id1, err := uc.Create(context.Background(), usecase.CreatePublishedTableInput{
 		Slug: "first", DisplayName: "First",
-		SourceTableID: "01JSRC00000000000000030",
-		RefreshMode:   domain.RefreshModePerRequest,
+		RefreshMode: domain.RefreshModePerRequest,
+		Levels:      singleLevelInput("01JSRC00000000000000030", "5", "5"),
 	})
 	require.NoError(t, err)
 	id2, err := uc.Create(context.Background(), usecase.CreatePublishedTableInput{
 		Slug: "second", DisplayName: "Second",
-		SourceTableID: "01JSRC00000000000000030",
-		RefreshMode:   domain.RefreshModePerRequest,
+		RefreshMode: domain.RefreshModePerRequest,
+		Levels:      singleLevelInput("01JSRC00000000000000030", "5", "5"),
 	})
 	require.NoError(t, err)
 	_ = id1
@@ -341,14 +372,102 @@ func TestPublishedTableUseCase_Update_ChecksSlug(t *testing.T) {
 	// 自分の slug を別の有効値へ → OK
 	require.NoError(t, uc.Update(context.Background(), usecase.UpdatePublishedTableInput{
 		ID: id2, Slug: "second-renamed", DisplayName: "Second",
-		SourceTableID: "01JSRC00000000000000030",
-		RefreshMode:   domain.RefreshModePerRequest,
+		RefreshMode: domain.RefreshModePerRequest,
+		Levels:      singleLevelInput("01JSRC00000000000000030", "5", "5"),
 	}))
 	// 他人の slug に変更 → 重複
 	err = uc.Update(context.Background(), usecase.UpdatePublishedTableInput{
 		ID: id2, Slug: "first", DisplayName: "Second",
-		SourceTableID: "01JSRC00000000000000030",
-		RefreshMode:   domain.RefreshModePerRequest,
+		RefreshMode: domain.RefreshModePerRequest,
+		Levels:      singleLevelInput("01JSRC00000000000000030", "5", "5"),
 	})
 	require.True(t, errors.Is(err, usecase.ErrSlugDuplicated))
+}
+
+func TestPublishedTableUseCase_CreateFromSourceTable_GeneratesLevelsAndMappings(t *testing.T) {
+	src := newFakeSourceRepo()
+	seedSourceWithLevels(t, src, "01JSRC00000000000000040", "Stella", "", []string{"0", "1", "2"})
+	uc, pubRepo := newPublishedUC(t, src)
+
+	id, err := uc.CreateFromSourceTable(context.Background(), "01JSRC00000000000000040", "stella", "Stella Public", "★")
+	require.NoError(t, err)
+	require.NotEmpty(t, id)
+
+	got, err := pubRepo.Get(context.Background(), id)
+	require.NoError(t, err)
+	require.Equal(t, "stella", got.Slug)
+	require.Equal(t, "★", got.Symbol)
+	require.Equal(t, domain.RefreshModeManual, got.Pick.RefreshMode)
+	require.Len(t, got.Levels, 3)
+	require.Equal(t, "0", got.Levels[0].Name)
+	require.Equal(t, 0, got.Levels[0].PerMappingPick)
+	require.Equal(t, 0, got.Levels[0].TotalPick)
+	require.Len(t, got.Levels[0].Mappings, 1)
+	require.Equal(t, "01JSRC00000000000000040", got.Levels[0].Mappings[0].SourceTableID)
+	require.Equal(t, "0", got.Levels[0].Mappings[0].SourceLevel)
+}
+
+func TestPublishedTableUseCase_ApplyBulkPickConfig_OverwritesAllLevels(t *testing.T) {
+	src := newFakeSourceRepo()
+	seedSourceWithLevels(t, src, "01JSRC00000000000000041", "Stella", "", []string{"1", "2"})
+	uc, pubRepo := newPublishedUC(t, src)
+	id, err := uc.CreateFromSourceTable(context.Background(), "01JSRC00000000000000041", "stella", "S", "")
+	require.NoError(t, err)
+
+	require.NoError(t, uc.ApplyBulkPickConfig(context.Background(), id, 3, 7))
+
+	got, err := pubRepo.Get(context.Background(), id)
+	require.NoError(t, err)
+	require.Len(t, got.Levels, 2)
+	for _, lv := range got.Levels {
+		require.Equal(t, 3, lv.PerMappingPick)
+		require.Equal(t, 7, lv.TotalPick)
+	}
+}
+
+func TestPublishedTableUseCase_Create_RejectsDuplicateLevelNames(t *testing.T) {
+	src := newFakeSourceRepo()
+	seedSource(t, src, "01JSRC00000000000000042", "X", "")
+	uc, _ := newPublishedUC(t, src)
+
+	_, err := uc.Create(context.Background(), usecase.CreatePublishedTableInput{
+		Slug: "x", DisplayName: "X", RefreshMode: domain.RefreshModeManual,
+		Levels: []usecase.PublishedTableLevelInput{
+			{Name: "5", Mappings: []usecase.PublishedTableLevelMappingInput{{SourceTableID: "01JSRC00000000000000042", SourceLevel: "5"}}},
+			{Name: "5", Mappings: []usecase.PublishedTableLevelMappingInput{{SourceTableID: "01JSRC00000000000000042", SourceLevel: "6"}}},
+		},
+	})
+	require.True(t, errors.Is(err, usecase.ErrDuplicateLevelName))
+}
+
+func TestPublishedTableUseCase_Create_RejectsDuplicateMappingWithinLevel(t *testing.T) {
+	src := newFakeSourceRepo()
+	seedSource(t, src, "01JSRC00000000000000043", "X", "")
+	uc, _ := newPublishedUC(t, src)
+
+	_, err := uc.Create(context.Background(), usecase.CreatePublishedTableInput{
+		Slug: "x", DisplayName: "X", RefreshMode: domain.RefreshModeManual,
+		Levels: []usecase.PublishedTableLevelInput{{
+			Name: "5",
+			Mappings: []usecase.PublishedTableLevelMappingInput{
+				{SourceTableID: "01JSRC00000000000000043", SourceLevel: "5"},
+				{SourceTableID: "01JSRC00000000000000043", SourceLevel: "5"},
+			},
+		}},
+	})
+	require.True(t, errors.Is(err, usecase.ErrDuplicateMapping))
+}
+
+func TestPublishedTableUseCase_Create_RejectsUnknownSourceTableInMapping(t *testing.T) {
+	src := newFakeSourceRepo()
+	uc, _ := newPublishedUC(t, src)
+
+	_, err := uc.Create(context.Background(), usecase.CreatePublishedTableInput{
+		Slug: "x", DisplayName: "X", RefreshMode: domain.RefreshModeManual,
+		Levels: []usecase.PublishedTableLevelInput{{
+			Name:     "5",
+			Mappings: []usecase.PublishedTableLevelMappingInput{{SourceTableID: "unknown", SourceLevel: "5"}},
+		}},
+	})
+	require.True(t, errors.Is(err, usecase.ErrSourceTableNotFound))
 }
