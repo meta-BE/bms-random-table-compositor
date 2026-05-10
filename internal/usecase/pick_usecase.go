@@ -182,21 +182,31 @@ func (u *PickUseCase) pickLevel(
 
 	// unionPool: SortOrder 昇順（= mappings 順）で走査し、重複は最初に出会ったマッピング側のみ採用する。
 	// フェーズ 2 で「フェーズ 1 で取り切れなかった残りプール」として使う。
+	// chartOriginMapping: 各譜面が「最初に出現したマッピング index」を記録する。
+	// HTML 出力でマッピング順に並べるため、フェーズ 2 で取られた譜面の起源マッピングも判定可能にする。
 	seenUnion := map[string]struct{}{}
+	chartOriginMapping := map[string]int{}
 	var unionPool []domain.EnrichedChart
-	for _, p := range pools {
+	for i, p := range pools {
 		for _, c := range p {
 			k := keyOf(c)
 			if _, ok := seenUnion[k]; ok {
 				continue
 			}
 			seenUnion[k] = struct{}{}
+			chartOriginMapping[k] = i
 			unionPool = append(unionPool, c)
 		}
 	}
 
+	// pickedItem: 整列のため (mapping_index, chart) を保持する内部表現。
+	type pickedItem struct {
+		chart      domain.EnrichedChart
+		mappingIdx int
+	}
+
 	// フェーズ 1: 各マッピングから m 曲。既選曲は除外。
-	var picked []domain.EnrichedChart
+	var picked []pickedItem
 	pickedKeys := map[string]struct{}{}
 	m := lv.PerMappingPick
 	for i := range pools {
@@ -211,12 +221,14 @@ func (u *PickUseCase) pickLevel(
 		taken := weightedSampleWithoutReplacement(ctx, avail, m, u.weighter, rng, now)
 		for _, c := range taken {
 			pickedKeys[keyOf(c)] = struct{}{}
+			picked = append(picked, pickedItem{chart: c, mappingIdx: i})
 		}
-		picked = append(picked, taken...)
 	}
 
 	// フェーズ 2: 合計 n 曲を目標に、unionPool 残りから補填。
 	// sum(m) > n の場合は need <= 0 となりスキップ（フェーズ 1 で既に超過分を取得している）。
+	// フェーズ 2 で取られた譜面は chartOriginMapping から起源マッピング index を引き継ぐ
+	// （= マッピング順に並べたとき正しい位置に配置される）。
 	need := lv.TotalPick - len(picked)
 	if need > 0 {
 		remaining := make([]domain.EnrichedChart, 0, len(unionPool))
@@ -229,17 +241,27 @@ func (u *PickUseCase) pickLevel(
 		sort.SliceStable(remaining, func(a, b int) bool { return remaining[a].Position < remaining[b].Position })
 		taken := weightedSampleWithoutReplacement(ctx, remaining, need, u.weighter, rng, now)
 		for _, c := range taken {
-			pickedKeys[keyOf(c)] = struct{}{}
+			k := keyOf(c)
+			pickedKeys[k] = struct{}{}
+			picked = append(picked, pickedItem{chart: c, mappingIdx: chartOriginMapping[k]})
 		}
-		picked = append(picked, taken...)
 	}
+
+	// 出力整列: (mappingIdx 昇順, Position 昇順) の安定整列。
+	// マッピング 0 由来の譜面が先に並び、各群内ではソース表 curator の Position 順を尊重。
+	// フェーズ 2 で追加された譜面も起源マッピング群に混ざる（末尾に固まらない）。
+	sort.SliceStable(picked, func(a, b int) bool {
+		if picked[a].mappingIdx != picked[b].mappingIdx {
+			return picked[a].mappingIdx < picked[b].mappingIdx
+		}
+		return picked[a].chart.Position < picked[b].chart.Position
+	})
 
 	// 出力前: PickedChart に包んで PublicLevel を併記する (Level はソース側のまま)。
 	out := make([]domain.PickedChart, 0, len(picked))
-	for _, c := range picked {
-		out = append(out, domain.PickedChart{EnrichedChart: c, PublicLevel: lv.Name})
+	for _, p := range picked {
+		out = append(out, domain.PickedChart{EnrichedChart: p.chart, PublicLevel: lv.Name})
 	}
-	sort.SliceStable(out, func(a, b int) bool { return out[a].Position < out[b].Position })
 	return out, nil
 }
 

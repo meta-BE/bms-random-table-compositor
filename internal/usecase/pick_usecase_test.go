@@ -560,3 +560,44 @@ func TestPickUseCase_OutputSortedByPositionWithinLevel(t *testing.T) {
 	}
 	require.True(t, sort.IntsAreSorted(positions), "Position 昇順で並ぶはず: %v", positions)
 }
+
+// 複数マッピング合成時、出力は (mappingIdx 昇順, Position 昇順) で並ぶ。
+// マッピング 0 由来の譜面が全件先に並び、続いてマッピング 1 由来。
+// フェーズ 2 で全体プールから補填された譜面も「起源マッピング群」に混ざる（末尾に固まらない）。
+func TestPickUseCase_OutputGroupedByMappingThenPosition(t *testing.T) {
+	f := newPickUCFixture(t)
+	// SRC1 (mapping 0): position 10, 20, 30 で 3 曲
+	// SRC2 (mapping 1): position 5, 15 で 2 曲
+	// PerMappingPick=1 → フェーズ 1 で各マッピング 1 曲
+	// TotalPick=5 → フェーズ 2 で残り全部補填 (合計 5 曲)
+	f.seedSource(t, "SRC1", []string{"5"}, domain.FetchStatusOK, []domain.SourceChart{
+		chartFixture("SRC1", "5", 10, "a1"),
+		chartFixture("SRC1", "5", 20, "a2"),
+		chartFixture("SRC1", "5", 30, "a3"),
+	})
+	f.seedSource(t, "SRC2", []string{"5"}, domain.FetchStatusOK, []domain.SourceChart{
+		chartFixture("SRC2", "5", 5, "b1"),
+		chartFixture("SRC2", "5", 15, "b2"),
+	})
+	f.seedPubWithLevels(t, "PUB1", "p1", false, domain.RefreshModePerRequest, []levelSpec{
+		{name: "5", m: 1, n: 5, mappings: []mappingSpec{
+			{srcID: "SRC1", level: "5"},
+			{srcID: "SRC2", level: "5"},
+		}},
+	})
+
+	r, _, err := f.uc.PickBySlug(context.Background(), "p1")
+	require.NoError(t, err)
+	require.Len(t, r.Charts, 5)
+
+	// 出力順を SourceID で見ると、SRC1 由来が前半 (3 件) → SRC2 由来が後半 (2 件)
+	srcIDs := make([]string, len(r.Charts))
+	positions := make([]int, len(r.Charts))
+	for i, c := range r.Charts {
+		srcIDs[i] = c.SourceID
+		positions[i] = c.Position
+	}
+	require.Equal(t, []string{"SRC1", "SRC1", "SRC1", "SRC2", "SRC2"}, srcIDs)
+	// 各マッピング群内では Position 昇順
+	require.Equal(t, []int{10, 20, 30, 5, 15}, positions)
+}
