@@ -67,9 +67,11 @@
     }));
   }
 
-  function sourceLevelOptions(sourceId: string): string[] {
+  function sourceLevelOptions(sourceId: string): { value: string; label: string }[] {
     const s = sources.find((x) => x.id === sourceId);
-    return s ? s.levelOrder : [];
+    if (!s) return [];
+    const symbol = s.symbol ?? '';
+    return s.levelOrder.map((lvl) => ({ value: lvl, label: `${symbol}${lvl}` }));
   }
 
   // バリデーション警告
@@ -144,8 +146,8 @@
                         </select>
                         <select class="select select-xs" bind:value={mp.sourceLevel}>
                           <option value="">(未選択)</option>
-                          {#each sourceLevelOptions(mp.sourceTableId) as lvl}
-                            <option value={lvl}>{lvl}</option>
+                          {#each sourceLevelOptions(mp.sourceTableId) as opt}
+                            <option value={opt.value}>{opt.label}</option>
                           {/each}
                         </select>
                         <button class="btn btn-xs btn-ghost" type="button" on:click={() => removeMapping(i, j)}>✕</button>
