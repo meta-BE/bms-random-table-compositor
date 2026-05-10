@@ -84,6 +84,22 @@ func Bootstrap() (*Services, error) {
 
 	systemClock := clock.System{}
 	sourceAttacher := persistence.NewSongdataAttacher(db, systemClock, lg)
+	sourceRepo := persistence.NewSourceTableRepoSQL(db, sourceAttacher)
+
+	// 既存ソース表で level_order_json が空のものを charts から自動補完する。
+	// header.json に level_order を含まない BMS 表 (例: 一部の satellite/stella) で、
+	// 起動時 RefreshAll が HTTP 304 Not Modified を受け取ると SaveFetched の通常パスを
+	// 通らず空のままになるため、起動時に 1 回 backfill する (冪等)。
+	// エラーは fatal にせず Warn ログのみ (起動を阻害しない)。
+	{
+		bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if n, err := sourceRepo.BackfillEmptyLevelOrder(bgCtx); err != nil {
+			lg.Warn("backfill level_order failed", "err", err, "filled_so_far", n)
+		} else if n > 0 {
+			lg.Info("backfilled level_order from charts", "count", n)
+		}
+		cancel()
+	}
 
 	// 起動時に songdata.db が設定済みなら ATTACH を試みる (失敗しても起動継続)
 	{
@@ -99,7 +115,6 @@ func Bootstrap() (*Services, error) {
 		cancel()
 	}
 
-	sourceRepo := persistence.NewSourceTableRepoSQL(db, sourceAttacher)
 	httpClient := &http.Client{Timeout: 30 * time.Second}
 	fetcher := gateway.NewBMSTableFetcher(httpClient, lg)
 	idGen := idgen.NewULID()

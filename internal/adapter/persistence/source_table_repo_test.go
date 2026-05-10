@@ -2,6 +2,7 @@ package persistence_test
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"io"
 	"log/slog"
@@ -18,6 +19,14 @@ import (
 
 func setupSourceTableRepo(t *testing.T) *persistence.SourceTableRepoSQL {
 	t.Helper()
+	repo, _ := setupSourceTableRepoWithDB(t)
+	return repo
+}
+
+// setupSourceTableRepoWithDB は repo と内部 *sql.DB を併せて返すヘルパ。
+// Backfill テストのように DB を直接いじりたいケース用。
+func setupSourceTableRepoWithDB(t *testing.T) (*persistence.SourceTableRepoSQL, *sql.DB) {
+	t.Helper()
 	dir := t.TempDir()
 	db, err := persistence.OpenDB(filepath.Join(dir, "test.db"))
 	require.NoError(t, err)
@@ -26,7 +35,7 @@ func setupSourceTableRepo(t *testing.T) *persistence.SourceTableRepoSQL {
 	require.NoError(t, persistence.RunMigrations(db))
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	attacher := persistence.NewSongdataAttacher(db, clock.System{}, logger)
-	return persistence.NewSourceTableRepoSQL(db, attacher)
+	return persistence.NewSourceTableRepoSQL(db, attacher), db
 }
 
 func TestSourceTableRepoSQL_CreateThenGet(t *testing.T) {
@@ -347,4 +356,66 @@ func TestSourceTableRepoSQL_SaveFetched_KeepsHeaderLevelOrder_WhenProvided(t *te
 	got, err := r.Get(ctx, "src-keep")
 	require.NoError(t, err)
 	require.Equal(t, []string{"a", "b"}, got.LevelOrder)
+}
+
+// BackfillEmptyLevelOrder は level_order_json が空のソース表を charts から補完する。
+// 304 Not Modified パスで populated されなかった既存 DB の救済。冪等であることを併せて検証。
+func TestSourceTableRepoSQL_BackfillEmptyLevelOrder_FillsEmptyFromCharts(t *testing.T) {
+	repo, db := setupSourceTableRepoWithDB(t)
+	ctx := context.Background()
+
+	// ケース 1: level_order_json が '[]' で charts あり → 補完される
+	_, err := repo.Create(ctx, domain.SourceTable{
+		ID: "src-empty", InputURL: "https://x", InputKind: domain.InputKindHTML,
+		LastFetchStatus: domain.FetchStatusOK,
+	})
+	require.NoError(t, err)
+	require.NoError(t, repo.SaveFetched(ctx, "src-empty", port.FetchedTable{
+		Header: domain.BMSTableHeader{Name: "T", DataURL: "data.json"}, // LevelOrder なし
+		Charts: []domain.SourceChart{
+			{Position: 0, MD5: "a", Level: "5"},
+			{Position: 1, MD5: "b", Level: "1"},
+			{Position: 2, MD5: "c", Level: "10"},
+		},
+	}, time.Now()))
+	// SaveFetched 直後は新コードで populated されるため、テスト目的で空に巻き戻す。
+	// 既存 DB で 304 Not Modified によって空のままだった状況を再現する。
+	_, err = db.Exec(`UPDATE source_table SET level_order_json='[]' WHERE id='src-empty'`)
+	require.NoError(t, err)
+
+	// ケース 2: level_order_json 既に populated → 触らない
+	_, err = repo.Create(ctx, domain.SourceTable{
+		ID: "src-populated", InputURL: "https://y", InputKind: domain.InputKindHTML,
+		LevelOrder:      []string{"a", "b"},
+		LastFetchStatus: domain.FetchStatusOK,
+	})
+	require.NoError(t, err)
+
+	// ケース 3: level_order_json 空 + charts なし → 補完しない
+	_, err = repo.Create(ctx, domain.SourceTable{
+		ID: "src-no-charts", InputURL: "https://z", InputKind: domain.InputKindHTML,
+		LastFetchStatus: domain.FetchStatusNever,
+	})
+	require.NoError(t, err)
+
+	n, err := repo.BackfillEmptyLevelOrder(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 1, n) // src-empty のみ補完
+
+	got1, err := repo.Get(ctx, "src-empty")
+	require.NoError(t, err)
+	require.Equal(t, []string{"1", "5", "10"}, got1.LevelOrder)
+
+	got2, err := repo.Get(ctx, "src-populated")
+	require.NoError(t, err)
+	require.Equal(t, []string{"a", "b"}, got2.LevelOrder)
+
+	got3, err := repo.Get(ctx, "src-no-charts")
+	require.NoError(t, err)
+	require.Empty(t, got3.LevelOrder)
+
+	// 冪等: 2 回目は補完件数 0 件で安定する。
+	n2, err := repo.BackfillEmptyLevelOrder(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 0, n2)
 }

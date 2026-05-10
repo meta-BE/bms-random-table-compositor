@@ -396,6 +396,82 @@ func parseLevelNumeric(s string) (float64, bool) {
 	return f, true
 }
 
+// BackfillEmptyLevelOrder は level_order_json が空 (`[]` or `null` or 空文字列) のソース表に対して、
+// source_table_chart の distinct level を自然順で導出して埋める。
+// header.json に level_order を含まないソース表 (例: 一部の satellite/stella) で
+// HTTP 304 Not Modified によって SaveFetched の通常パスを通れず空のままになっているケースを救済するため、
+// Bootstrap 時に 1 回呼ぶ。冪等 (空でないものは触らない)。
+//
+// 戻り値は補完したソース表の件数。1 件でも失敗したら最初のエラーを返すが、
+// 呼び出し側 (Bootstrap) はこれを fatal にせず Warn ログのみで起動継続する想定。
+func (r *SourceTableRepoSQL) BackfillEmptyLevelOrder(ctx context.Context) (int, error) {
+	// 空の level_order_json を持つソース表 ID を取得
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT id FROM source_table
+		 WHERE level_order_json IN ('', '[]', 'null')`)
+	if err != nil {
+		return 0, fmt.Errorf("query empty level_order sources: %w", err)
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return 0, fmt.Errorf("scan source id: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("rows err: %w", err)
+	}
+
+	count := 0
+	for _, id := range ids {
+		levels, err := r.distinctChartLevels(ctx, id)
+		if err != nil {
+			return count, fmt.Errorf("distinct levels %q: %w", id, err)
+		}
+		if len(levels) == 0 {
+			continue // chart も無いソース表は触らない
+		}
+		levelOrderJSON, err := json.Marshal(levels)
+		if err != nil {
+			return count, fmt.Errorf("marshal level_order %q: %w", id, err)
+		}
+		if _, err := r.db.ExecContext(ctx,
+			`UPDATE source_table SET level_order_json=?, updated_at=datetime('now') WHERE id=?`,
+			string(levelOrderJSON), id); err != nil {
+			return count, fmt.Errorf("update source_table %q: %w", id, err)
+		}
+		count++
+	}
+	return count, nil
+}
+
+// distinctChartLevels は対象ソース表の chart から distinct level を自然順で取得する。
+func (r *SourceTableRepoSQL) distinctChartLevels(ctx context.Context, sourceID string) ([]string, error) {
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT DISTINCT level FROM source_table_chart
+		 WHERE source_id=? AND level<>''`, sourceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var charts []domain.SourceChart
+	for rows.Next() {
+		var lv string
+		if err := rows.Scan(&lv); err != nil {
+			return nil, err
+		}
+		charts = append(charts, domain.SourceChart{Level: lv})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return deriveLevelOrderFromCharts(charts), nil
+}
+
 // MarkFetchError は取得失敗を記録する。譜面行は触らない（前回成功時のキャッシュを保持）。
 func (r *SourceTableRepoSQL) MarkFetchError(
 	ctx context.Context, sourceID string, fetchErr error, fetchedAt time.Time,
