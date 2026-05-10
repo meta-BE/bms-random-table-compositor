@@ -15,8 +15,11 @@ import {
 } from '../../wailsjs/go/handler/SourceTableHandler';
 import {
   ListPublishedTables,
+  GetPublishedTable,
   CreatePublishedTable,
+  CreatePublishedTableFromSource,
   UpdatePublishedTable,
+  ApplyBulkPickConfig,
   DeletePublishedTable,
   ValidateSlug,
   SuggestSlugFromSource,
@@ -59,32 +62,71 @@ export type AddSourceTableRequest = { url: string };
 
 export type RefreshMode = 'per_request' | 'daily' | 'manual';
 
-export type PublishedTableDTO = {
+export interface PublishedTableLevelMappingDTO {
+  id: string;
+  sourceTableId: string;
+  sourceLevel: string;
+  sortOrder: number;
+}
+
+export interface PublishedTableLevelDTO {
+  id: string;
+  name: string;
+  sortOrder: number;
+  perMappingPick: number;
+  totalPick: number;
+  mappings: PublishedTableLevelMappingDTO[];
+}
+
+export interface PublishedTableDTO {
   id: string;
   slug: string;
   displayName: string;
   symbol: string;
-  sourceTableId: string;
   ownedOnly: boolean;
-  pickPerLevel: number;
   refreshMode: RefreshMode;
   sortOrder: number;
-};
+  levels: PublishedTableLevelDTO[];
+}
 
-export type CreatePublishedTableRequest = {
+export interface PublishedTableLevelMappingInputDTO {
+  sourceTableId: string;
+  sourceLevel: string;
+}
+
+export interface PublishedTableLevelInputDTO {
+  name: string;
+  perMappingPick: number;
+  totalPick: number;
+  mappings: PublishedTableLevelMappingInputDTO[];
+}
+
+export interface CreatePublishedTableRequest {
   slug: string;
   displayName: string;
   symbol: string;
-  sourceTableId: string;
   ownedOnly: boolean;
-  pickPerLevel: number;
   refreshMode: RefreshMode;
-};
+  levels: PublishedTableLevelInputDTO[];
+}
 
-export type UpdatePublishedTableRequest = CreatePublishedTableRequest & {
+export interface UpdatePublishedTableRequest extends CreatePublishedTableRequest {
   id: string;
   sortOrder: number;
-};
+}
+
+export interface CreateFromSourceRequest {
+  sourceTableId: string;
+  slug: string;
+  displayName: string;
+  symbol: string;
+}
+
+export interface ApplyBulkPickConfigRequest {
+  id: string;
+  perMappingPick: number;
+  totalPick: number;
+}
 
 export type SlugValidation =
   | { ok: true; reason?: undefined }
@@ -175,11 +217,21 @@ export const api = {
   listPublishedTables(): Promise<PublishedTableDTO[]> {
     return ListPublishedTables() as Promise<PublishedTableDTO[]>;
   },
+  getPublishedTable(id: string): Promise<PublishedTableDTO> {
+    return GetPublishedTable(id) as Promise<PublishedTableDTO>;
+  },
   createPublishedTable(req: CreatePublishedTableRequest): Promise<string> {
-    return CreatePublishedTable(req) as Promise<string>;
+    // Wails 生成型は convertValues メソッドを含むクラス。POJO を渡せば JSON ラウンドトリップで動作する
+    return CreatePublishedTable(req as any) as Promise<string>;
+  },
+  createPublishedTableFromSource(req: CreateFromSourceRequest): Promise<string> {
+    return CreatePublishedTableFromSource(req as any) as Promise<string>;
   },
   updatePublishedTable(req: UpdatePublishedTableRequest): Promise<void> {
-    return UpdatePublishedTable(req);
+    return UpdatePublishedTable(req as any);
+  },
+  applyBulkPickConfig(req: ApplyBulkPickConfigRequest): Promise<void> {
+    return ApplyBulkPickConfig(req as any);
   },
   deletePublishedTable(id: string): Promise<void> {
     return DeletePublishedTable(id);
