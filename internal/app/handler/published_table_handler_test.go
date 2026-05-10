@@ -38,13 +38,29 @@ func TestPublishedTableHandler_Create_List_Delete(t *testing.T) {
 	h, src := setupPublishedTableHandler(t)
 	_, err := src.Create(context.Background(), domain.SourceTable{
 		ID: "SRC1", InputURL: "https://x", InputKind: domain.InputKindHTML,
+		LevelOrder:      []string{"1", "2"},
 		LastFetchStatus: domain.FetchStatusOK,
 	})
 	require.NoError(t, err)
 
+	// Levels を明示的に渡して作成する。
 	id, err := h.CreatePublishedTable(handler.CreatePublishedTableRequest{
-		Slug: "ok", DisplayName: "OK", SourceTableID: "SRC1",
+		Slug: "ok", DisplayName: "OK", Symbol: "★",
 		RefreshMode: "per_request",
+		Levels: []handler.PublishedTableLevelInputDTO{
+			{
+				Name: "1", PerMappingPick: 0, TotalPick: 0,
+				Mappings: []handler.PublishedTableLevelMappingInputDTO{
+					{SourceTableID: "SRC1", SourceLevel: "1"},
+				},
+			},
+			{
+				Name: "2", PerMappingPick: 0, TotalPick: 0,
+				Mappings: []handler.PublishedTableLevelMappingInputDTO{
+					{SourceTableID: "SRC1", SourceLevel: "2"},
+				},
+			},
+		},
 	})
 	require.NoError(t, err)
 	require.NotEmpty(t, id)
@@ -53,6 +69,16 @@ func TestPublishedTableHandler_Create_List_Delete(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, list, 1)
 	require.Equal(t, "ok", list[0].Slug)
+	// List では Levels は空配列で返す（仕様）。
+	require.Empty(t, list[0].Levels)
+
+	// Get では Levels / Mappings 込みで返る。
+	got, err := h.GetPublishedTable(id)
+	require.NoError(t, err)
+	require.Len(t, got.Levels, 2)
+	require.Equal(t, "1", got.Levels[0].Name)
+	require.Len(t, got.Levels[0].Mappings, 1)
+	require.Equal(t, "SRC1", got.Levels[0].Mappings[0].SourceTableID)
 
 	require.NoError(t, h.DeletePublishedTable(id))
 	list, err = h.ListPublishedTables()
@@ -64,6 +90,7 @@ func TestPublishedTableHandler_ValidateSlug(t *testing.T) {
 	h, src := setupPublishedTableHandler(t)
 	_, err := src.Create(context.Background(), domain.SourceTable{
 		ID: "SRC1", InputURL: "https://x", InputKind: domain.InputKindHTML,
+		LevelOrder:      []string{"1"},
 		LastFetchStatus: domain.FetchStatusOK,
 	})
 	require.NoError(t, err)
@@ -73,12 +100,66 @@ func TestPublishedTableHandler_ValidateSlug(t *testing.T) {
 	require.Equal(t, "invalid_format", h.ValidateSlug("BadSlug", "").Reason)
 	require.Equal(t, "reserved", h.ValidateSlug("_admin", "").Reason)
 
-	id, err := h.CreatePublishedTable(handler.CreatePublishedTableRequest{
-		Slug: "taken", DisplayName: "T", SourceTableID: "SRC1",
-		RefreshMode: "per_request",
+	id, err := h.CreatePublishedTableFromSource(handler.CreateFromSourceRequest{
+		SourceTableID: "SRC1",
+		Slug:          "taken", DisplayName: "T", Symbol: "★",
 	})
 	require.NoError(t, err)
 
 	require.Equal(t, "duplicate", h.ValidateSlug("taken", "").Reason)
 	require.True(t, h.ValidateSlug("taken", id).OK, "自分自身を除外すれば OK")
+}
+
+func TestPublishedTableHandler_CreatePublishedTableFromSource(t *testing.T) {
+	h, src := setupPublishedTableHandler(t)
+	_, err := src.Create(context.Background(), domain.SourceTable{
+		ID: "SRC1", InputURL: "https://x", InputKind: domain.InputKindHTML,
+		LevelOrder:      []string{"1", "2"},
+		LastFetchStatus: domain.FetchStatusOK,
+	})
+	require.NoError(t, err)
+
+	id, err := h.CreatePublishedTableFromSource(handler.CreateFromSourceRequest{
+		SourceTableID: "SRC1",
+		Slug:          "stella", DisplayName: "Stella", Symbol: "★",
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, id)
+
+	got, err := h.GetPublishedTable(id)
+	require.NoError(t, err)
+	require.Len(t, got.Levels, 2)
+	require.Equal(t, "1", got.Levels[0].Name)
+	require.Equal(t, "2", got.Levels[1].Name)
+	// 各レベルがソース表の同レベルへ 1:1 マッピングされる。
+	require.Len(t, got.Levels[0].Mappings, 1)
+	require.Equal(t, "SRC1", got.Levels[0].Mappings[0].SourceTableID)
+	require.Equal(t, "1", got.Levels[0].Mappings[0].SourceLevel)
+}
+
+func TestPublishedTableHandler_ApplyBulkPickConfig(t *testing.T) {
+	h, src := setupPublishedTableHandler(t)
+	_, err := src.Create(context.Background(), domain.SourceTable{
+		ID: "SRC1", InputURL: "https://x", InputKind: domain.InputKindHTML,
+		LevelOrder:      []string{"1", "2"},
+		LastFetchStatus: domain.FetchStatusOK,
+	})
+	require.NoError(t, err)
+	id, err := h.CreatePublishedTableFromSource(handler.CreateFromSourceRequest{
+		SourceTableID: "SRC1",
+		Slug:          "stella", DisplayName: "S", Symbol: "★",
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, h.ApplyBulkPickConfig(handler.ApplyBulkPickConfigRequest{
+		ID: id, PerMappingPick: 3, TotalPick: 7,
+	}))
+
+	got, err := h.GetPublishedTable(id)
+	require.NoError(t, err)
+	require.NotEmpty(t, got.Levels)
+	for _, lv := range got.Levels {
+		require.Equal(t, 3, lv.PerMappingPick)
+		require.Equal(t, 7, lv.TotalPick)
+	}
 }

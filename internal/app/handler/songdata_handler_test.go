@@ -10,6 +10,7 @@ import (
 
 	"github.com/meta-BE/bms-random-table-compositor/internal/adapter/clock"
 	"github.com/meta-BE/bms-random-table-compositor/internal/adapter/persistence"
+	"github.com/meta-BE/bms-random-table-compositor/internal/adapter/weighter"
 	"github.com/meta-BE/bms-random-table-compositor/internal/app/handler"
 	"github.com/meta-BE/bms-random-table-compositor/internal/usecase"
 	"github.com/stretchr/testify/require"
@@ -32,7 +33,7 @@ func TestSongdataHandler_GetStatus_NotAttached(t *testing.T) {
 	a := persistence.NewSongdataAttacher(db, clock.System{}, logger)
 	configUC := usecase.NewConfigUseCase(persistence.NewConfigStoreSQL(db))
 	// PickUseCase はテスト用に nil 引数で作成 (status のみ呼ぶので問題ない)
-	pickUC := usecase.NewPickUseCase(nil, nil, usecase.NewPickResultStore(), clock.System{}, nil, logger)
+	pickUC := usecase.NewPickUseCase(nil, nil, usecase.NewPickResultStore(), clock.System{}, nil, logger, weighter.UniformWeighter{})
 
 	h := handler.NewSongdataHandler(a, configUC, pickUC)
 	h.SetContext(context.Background())

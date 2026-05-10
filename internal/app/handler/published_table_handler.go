@@ -10,41 +10,86 @@ import (
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
-// PublishedTableDTO はフロントエンドに返す JSON 構造体。
-type PublishedTableDTO struct {
+// PublishedTableLevelDTO はフロントエンドに返す公開レベルの JSON 構造体。
+type PublishedTableLevelDTO struct {
+	ID             string                          `json:"id"`
+	Name           string                          `json:"name"`
+	SortOrder      int                             `json:"sortOrder"`
+	PerMappingPick int                             `json:"perMappingPick"`
+	TotalPick      int                             `json:"totalPick"`
+	Mappings       []PublishedTableLevelMappingDTO `json:"mappings"`
+}
+
+// PublishedTableLevelMappingDTO はフロントエンドに返す公開レベル内マッピングの JSON 構造体。
+type PublishedTableLevelMappingDTO struct {
 	ID            string `json:"id"`
-	Slug          string `json:"slug"`
-	DisplayName   string `json:"displayName"`
-	Symbol        string `json:"symbol"`
 	SourceTableID string `json:"sourceTableId"`
-	OwnedOnly     bool   `json:"ownedOnly"`
-	PickPerLevel  int    `json:"pickPerLevel"`
-	RefreshMode   string `json:"refreshMode"`
+	SourceLevel   string `json:"sourceLevel"`
 	SortOrder     int    `json:"sortOrder"`
+}
+
+// PublishedTableDTO はフロントエンドに返す公開表本体の JSON 構造体。
+// Levels は List では空配列、Get では実体込みで返す。
+type PublishedTableDTO struct {
+	ID          string                   `json:"id"`
+	Slug        string                   `json:"slug"`
+	DisplayName string                   `json:"displayName"`
+	Symbol      string                   `json:"symbol"`
+	OwnedOnly   bool                     `json:"ownedOnly"`
+	RefreshMode string                   `json:"refreshMode"`
+	SortOrder   int                      `json:"sortOrder"`
+	Levels      []PublishedTableLevelDTO `json:"levels"`
+}
+
+// PublishedTableLevelInputDTO は Create / Update リクエストで受け取る公開レベル入力。
+type PublishedTableLevelInputDTO struct {
+	Name           string                               `json:"name"`
+	PerMappingPick int                                  `json:"perMappingPick"`
+	TotalPick      int                                  `json:"totalPick"`
+	Mappings       []PublishedTableLevelMappingInputDTO `json:"mappings"`
+}
+
+// PublishedTableLevelMappingInputDTO は Create / Update リクエストで受け取るマッピング入力。
+type PublishedTableLevelMappingInputDTO struct {
+	SourceTableID string `json:"sourceTableId"`
+	SourceLevel   string `json:"sourceLevel"`
 }
 
 // CreatePublishedTableRequest は CreatePublishedTable のリクエスト DTO。
 type CreatePublishedTableRequest struct {
-	Slug          string `json:"slug"`
-	DisplayName   string `json:"displayName"`
-	Symbol        string `json:"symbol"`
-	SourceTableID string `json:"sourceTableId"`
-	OwnedOnly     bool   `json:"ownedOnly"`
-	PickPerLevel  int    `json:"pickPerLevel"`
-	RefreshMode   string `json:"refreshMode"`
+	Slug        string                        `json:"slug"`
+	DisplayName string                        `json:"displayName"`
+	Symbol      string                        `json:"symbol"`
+	OwnedOnly   bool                          `json:"ownedOnly"`
+	RefreshMode string                        `json:"refreshMode"`
+	Levels      []PublishedTableLevelInputDTO `json:"levels"`
 }
 
 // UpdatePublishedTableRequest は UpdatePublishedTable のリクエスト DTO。
 type UpdatePublishedTableRequest struct {
-	ID            string `json:"id"`
+	ID          string                        `json:"id"`
+	Slug        string                        `json:"slug"`
+	DisplayName string                        `json:"displayName"`
+	Symbol      string                        `json:"symbol"`
+	OwnedOnly   bool                          `json:"ownedOnly"`
+	RefreshMode string                        `json:"refreshMode"`
+	SortOrder   int                           `json:"sortOrder"`
+	Levels      []PublishedTableLevelInputDTO `json:"levels"`
+}
+
+// CreateFromSourceRequest は CreatePublishedTableFromSource のリクエスト DTO。
+type CreateFromSourceRequest struct {
+	SourceTableID string `json:"sourceTableId"`
 	Slug          string `json:"slug"`
 	DisplayName   string `json:"displayName"`
 	Symbol        string `json:"symbol"`
-	SourceTableID string `json:"sourceTableId"`
-	OwnedOnly     bool   `json:"ownedOnly"`
-	PickPerLevel  int    `json:"pickPerLevel"`
-	RefreshMode   string `json:"refreshMode"`
-	SortOrder     int    `json:"sortOrder"`
+}
+
+// ApplyBulkPickConfigRequest は ApplyBulkPickConfig のリクエスト DTO。
+type ApplyBulkPickConfigRequest struct {
+	ID             string `json:"id"`
+	PerMappingPick int    `json:"perMappingPick"`
+	TotalPick      int    `json:"totalPick"`
 }
 
 // SlugValidationDTO は ValidateSlug の応答 DTO。
@@ -67,16 +112,65 @@ func NewPublishedTableHandler(uc *usecase.PublishedTableUseCase) *PublishedTable
 // SetContext は Wails の OnStartup で受け取る context を保存する。
 func (h *PublishedTableHandler) SetContext(ctx context.Context) { h.ctx = ctx }
 
+// toPublishedTableDTO は List 用の DTO 変換（Levels は空配列で返す）。
 func toPublishedTableDTO(t domain.PublishedTable) PublishedTableDTO {
 	return PublishedTableDTO{
 		ID: t.ID, Slug: t.Slug, DisplayName: t.DisplayName, Symbol: t.Symbol,
-		SourceTableID: t.SourceTableID, OwnedOnly: t.OwnedOnly,
-		PickPerLevel: t.Pick.PerLevel, RefreshMode: string(t.Pick.RefreshMode),
-		SortOrder: t.SortOrder,
+		OwnedOnly:   t.OwnedOnly,
+		RefreshMode: string(t.Pick.RefreshMode),
+		SortOrder:   t.SortOrder,
+		Levels:      []PublishedTableLevelDTO{},
 	}
 }
 
-// ListPublishedTables は登録済み公開表をすべて返す。
+// toPublishedTableDTOWithLevels は Get 用の DTO 変換（Levels / Mappings 込み）。
+func toPublishedTableDTOWithLevels(t domain.PublishedTable) PublishedTableDTO {
+	out := toPublishedTableDTO(t)
+	out.Levels = make([]PublishedTableLevelDTO, 0, len(t.Levels))
+	for _, lv := range t.Levels {
+		mappings := make([]PublishedTableLevelMappingDTO, 0, len(lv.Mappings))
+		for _, mp := range lv.Mappings {
+			mappings = append(mappings, PublishedTableLevelMappingDTO{
+				ID:            mp.ID,
+				SourceTableID: mp.SourceTableID,
+				SourceLevel:   mp.SourceLevel,
+				SortOrder:     mp.SortOrder,
+			})
+		}
+		out.Levels = append(out.Levels, PublishedTableLevelDTO{
+			ID:             lv.ID,
+			Name:           lv.Name,
+			SortOrder:      lv.SortOrder,
+			PerMappingPick: lv.PerMappingPick,
+			TotalPick:      lv.TotalPick,
+			Mappings:       mappings,
+		})
+	}
+	return out
+}
+
+// toLevelInputs は DTO 入力を usecase 入力へ変換する。
+func toLevelInputs(in []PublishedTableLevelInputDTO) []usecase.PublishedTableLevelInput {
+	out := make([]usecase.PublishedTableLevelInput, 0, len(in))
+	for _, lv := range in {
+		ms := make([]usecase.PublishedTableLevelMappingInput, 0, len(lv.Mappings))
+		for _, mp := range lv.Mappings {
+			ms = append(ms, usecase.PublishedTableLevelMappingInput{
+				SourceTableID: mp.SourceTableID,
+				SourceLevel:   mp.SourceLevel,
+			})
+		}
+		out = append(out, usecase.PublishedTableLevelInput{
+			Name:           lv.Name,
+			PerMappingPick: lv.PerMappingPick,
+			TotalPick:      lv.TotalPick,
+			Mappings:       ms,
+		})
+	}
+	return out
+}
+
+// ListPublishedTables は登録済み公開表をすべて返す（Levels は空配列）。
 func (h *PublishedTableHandler) ListPublishedTables() ([]PublishedTableDTO, error) {
 	list, err := h.uc.List(h.ctx)
 	if err != nil {
@@ -89,25 +183,51 @@ func (h *PublishedTableHandler) ListPublishedTables() ([]PublishedTableDTO, erro
 	return out, nil
 }
 
+// GetPublishedTable は ID 指定で公開表を返す（Levels / Mappings 込み）。
+func (h *PublishedTableHandler) GetPublishedTable(id string) (PublishedTableDTO, error) {
+	t, err := h.uc.Get(h.ctx, id)
+	if err != nil {
+		return PublishedTableDTO{}, err
+	}
+	return toPublishedTableDTOWithLevels(t), nil
+}
+
 // CreatePublishedTable は新規公開表を作成し、ID を返す。
 func (h *PublishedTableHandler) CreatePublishedTable(req CreatePublishedTableRequest) (string, error) {
-	return h.uc.Create(h.ctx, usecase.CreatePublishedTableInput{
-		Slug: req.Slug, DisplayName: req.DisplayName, Symbol: req.Symbol,
-		SourceTableID: req.SourceTableID, OwnedOnly: req.OwnedOnly,
-		PickPerLevel: req.PickPerLevel,
-		RefreshMode:  domain.RefreshMode(req.RefreshMode),
-	})
+	in := usecase.CreatePublishedTableInput{
+		Slug:        req.Slug,
+		DisplayName: req.DisplayName,
+		Symbol:      req.Symbol,
+		OwnedOnly:   req.OwnedOnly,
+		RefreshMode: domain.RefreshMode(req.RefreshMode),
+		Levels:      toLevelInputs(req.Levels),
+	}
+	return h.uc.Create(h.ctx, in)
 }
 
 // UpdatePublishedTable は公開表を更新する。
 func (h *PublishedTableHandler) UpdatePublishedTable(req UpdatePublishedTableRequest) error {
-	return h.uc.Update(h.ctx, usecase.UpdatePublishedTableInput{
-		ID: req.ID, Slug: req.Slug, DisplayName: req.DisplayName, Symbol: req.Symbol,
-		SourceTableID: req.SourceTableID, OwnedOnly: req.OwnedOnly,
-		PickPerLevel: req.PickPerLevel,
-		RefreshMode:  domain.RefreshMode(req.RefreshMode),
-		SortOrder:    req.SortOrder,
-	})
+	in := usecase.UpdatePublishedTableInput{
+		ID:          req.ID,
+		Slug:        req.Slug,
+		DisplayName: req.DisplayName,
+		Symbol:      req.Symbol,
+		OwnedOnly:   req.OwnedOnly,
+		RefreshMode: domain.RefreshMode(req.RefreshMode),
+		SortOrder:   req.SortOrder,
+		Levels:      toLevelInputs(req.Levels),
+	}
+	return h.uc.Update(h.ctx, in)
+}
+
+// CreatePublishedTableFromSource はソース表 1 件をテンプレに、各レベル 1:1 マッピングで公開表を作る。
+func (h *PublishedTableHandler) CreatePublishedTableFromSource(req CreateFromSourceRequest) (string, error) {
+	return h.uc.CreateFromSourceTable(h.ctx, req.SourceTableID, req.Slug, req.DisplayName, req.Symbol)
+}
+
+// ApplyBulkPickConfig は公開表内の全レベルへ (PerMappingPick, TotalPick) を一括適用する。
+func (h *PublishedTableHandler) ApplyBulkPickConfig(req ApplyBulkPickConfigRequest) error {
+	return h.uc.ApplyBulkPickConfig(h.ctx, req.ID, req.PerMappingPick, req.TotalPick)
 }
 
 // DeletePublishedTable は公開表を削除する。

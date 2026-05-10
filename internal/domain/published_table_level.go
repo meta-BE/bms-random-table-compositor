@@ -9,8 +9,8 @@ type PublishedTableLevel struct {
 	PublishedTableID string
 	Name             string // 公開レベル表示名（例: "5", "Lv.5", "中級"）
 	SortOrder        int
-	PerMappingPick   int // m: 各マッピングからの最低保証ピック数 (>= 0)
-	TotalPick        int // n: 公開レベル全体の目標合計ピック数 (>= 0)
+	PerMappingPick   int                          // m: 各マッピングからの最低保証ピック数 (>= 0)
+	TotalPick        int                          // n: 公開レベル全体の目標合計ピック数 (>= 0)
 	Mappings         []PublishedTableLevelMapping // SortOrder 昇順
 }
 

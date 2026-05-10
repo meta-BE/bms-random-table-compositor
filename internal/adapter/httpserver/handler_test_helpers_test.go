@@ -13,6 +13,7 @@ import (
 	"github.com/meta-BE/bms-random-table-compositor/internal/adapter/httpserver"
 	"github.com/meta-BE/bms-random-table-compositor/internal/adapter/persistence"
 	"github.com/meta-BE/bms-random-table-compositor/internal/adapter/randsrc"
+	"github.com/meta-BE/bms-random-table-compositor/internal/adapter/weighter"
 	"github.com/meta-BE/bms-random-table-compositor/internal/domain"
 	"github.com/meta-BE/bms-random-table-compositor/internal/port"
 	"github.com/meta-BE/bms-random-table-compositor/internal/usecase"
@@ -60,6 +61,7 @@ func newHTTPFixture(t *testing.T) *httpFixture {
 		stubClock{t: time.Date(2026, 5, 7, 12, 0, 0, 0, time.Local)},
 		port.RandSourceFactory(func(seed int64) port.RandSource { return randsrc.NewMathRandSource(seed) }),
 		logger,
+		weighter.UniformWeighter{},
 	)
 
 	mux := httpserver.NewMux(httpserver.Deps{Pick: pickUC, Pub: pubUC, Log: logger})
@@ -92,17 +94,30 @@ func (f *httpFixture) seedSourceWithCharts(t *testing.T, id, name string, levelO
 	}, time.Now()))
 }
 
-// seedPublished は公開表を作成する。symbolOverride を渡すと Symbol を指定値に上書きする
-// (省略時は "sl"; 既存テストとの後方互換のため可変引数)。
+// seedPublished は公開表を作成する。マッピングは sourceID + 各レベル 1:1 で生成する（旧 PerLevel 仕様の代替）。
+// symbolOverride を渡すと Symbol を指定値に上書きする (省略時は "sl"; 既存テストとの後方互換のため可変引数)。
 func (f *httpFixture) seedPublished(t *testing.T, slug, sourceID string, mode domain.RefreshMode, perLevel int, ownedOnly bool, symbolOverride ...string) string {
 	t.Helper()
 	symbol := "sl"
 	if len(symbolOverride) > 0 {
 		symbol = symbolOverride[0]
 	}
+	// 旧 PerLevel を新仕様の TotalPick として再現する。
+	src, err := f.srcRepo.Get(context.Background(), sourceID)
+	require.NoError(t, err)
+	levels := make([]usecase.PublishedTableLevelInput, 0, len(src.LevelOrder))
+	for _, lv := range src.LevelOrder {
+		levels = append(levels, usecase.PublishedTableLevelInput{
+			Name: lv, PerMappingPick: 0, TotalPick: perLevel,
+			Mappings: []usecase.PublishedTableLevelMappingInput{
+				{SourceTableID: sourceID, SourceLevel: lv},
+			},
+		})
+	}
 	id, err := f.pubUC.Create(context.Background(), usecase.CreatePublishedTableInput{
 		Slug: slug, DisplayName: slug, Symbol: symbol,
-		SourceTableID: sourceID, OwnedOnly: ownedOnly, PickPerLevel: perLevel, RefreshMode: mode,
+		OwnedOnly: ownedOnly, RefreshMode: mode,
+		Levels: levels,
 	})
 	require.NoError(t, err)
 	return id
