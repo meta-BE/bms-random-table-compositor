@@ -11,72 +11,98 @@ import (
 	"github.com/meta-BE/bms-random-table-compositor/internal/usecase"
 )
 
-// PublishedTableRepoSQL は published_table の永続化を担う port.PublishedTableRepo 実装。
+// PublishedTableRepoSQL は published_table / _level / _level_mapping を一括で扱う実装。
 type PublishedTableRepoSQL struct {
 	db *sql.DB
 }
 
-// NewPublishedTableRepoSQL は新しい PublishedTableRepoSQL を作る。
 func NewPublishedTableRepoSQL(db *sql.DB) *PublishedTableRepoSQL {
 	return &PublishedTableRepoSQL{db: db}
 }
 
 const publishedTableSelectColumns = `SELECT
-	id, slug, display_name, symbol, source_table_id, owned_only,
-	pick_per_level, pick_refresh_mode, prefer_old_play, sort_order
+	id, slug, display_name, symbol, owned_only,
+	pick_refresh_mode, sort_order
  FROM published_table`
 
 func (r *PublishedTableRepoSQL) scanRow(s rowScanner) (domain.PublishedTable, error) {
 	var (
 		t         domain.PublishedTable
 		ownedOnly int
-		preferOld int
 		mode      string
 	)
 	if err := s.Scan(
-		&t.ID, &t.Slug, &t.DisplayName, &t.Symbol, &t.SourceTableID, &ownedOnly,
-		&t.Pick.PerLevel, &mode, &preferOld, &t.SortOrder,
+		&t.ID, &t.Slug, &t.DisplayName, &t.Symbol, &ownedOnly,
+		&mode, &t.SortOrder,
 	); err != nil {
 		return domain.PublishedTable{}, err
 	}
 	t.OwnedOnly = ownedOnly != 0
-	t.Pick.PreferOldPlay = preferOld != 0
 	t.Pick.RefreshMode = domain.RefreshMode(mode)
 	return t, nil
 }
 
-// Create は PublishedTable を新規挿入する。slug の UNIQUE 違反は ErrSlugDuplicated を返す。
+// Create は PublishedTable を Levels/Mappings 込みで一括 INSERT する（1 トランザクション）。
 func (r *PublishedTableRepoSQL) Create(ctx context.Context, t domain.PublishedTable) (string, error) {
 	if t.ID == "" {
 		return "", errors.New("ID は必須です")
 	}
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
 	owned := 0
 	if t.OwnedOnly {
 		owned = 1
 	}
-	preferOld := 0
-	if t.Pick.PreferOldPlay {
-		preferOld = 1
-	}
-	_, err := r.db.ExecContext(ctx,
+	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO published_table
-		 (id, slug, display_name, symbol, source_table_id, owned_only,
-		  pick_per_level, pick_refresh_mode, prefer_old_play, sort_order)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		t.ID, t.Slug, t.DisplayName, t.Symbol, t.SourceTableID, owned,
-		t.Pick.PerLevel, string(t.Pick.RefreshMode), preferOld, t.SortOrder,
-	)
-	if err != nil {
+		 (id, slug, display_name, symbol, owned_only, pick_refresh_mode, sort_order)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		t.ID, t.Slug, t.DisplayName, t.Symbol, owned, string(t.Pick.RefreshMode), t.SortOrder,
+	); err != nil {
 		if isUniqueSlugViolation(err) {
 			return "", fmt.Errorf("%w: %s", usecase.ErrSlugDuplicated, t.Slug)
 		}
 		return "", fmt.Errorf("insert published_table %q: %w", t.ID, err)
 	}
+	if err := r.insertLevels(ctx, tx, t.ID, t.Levels); err != nil {
+		return "", err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return "", fmt.Errorf("commit: %w", err)
+	}
 	return t.ID, nil
 }
 
-// isUniqueSlugViolation は modernc/sqlite が返す UNIQUE 制約違反かを判定する。
-// modernc は標準 SQLite の "UNIQUE constraint failed: published_table.slug" メッセージを保つ。
+// insertLevels は published_table_id 配下の levels と mappings をまとめて INSERT する。
+func (r *PublishedTableRepoSQL) insertLevels(ctx context.Context, tx *sql.Tx, pubID string, levels []domain.PublishedTableLevel) error {
+	for _, lv := range levels {
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO published_table_level
+			 (id, published_table_id, name, sort_order, per_mapping_pick, total_pick)
+			 VALUES (?, ?, ?, ?, ?, ?)`,
+			lv.ID, pubID, lv.Name, lv.SortOrder, lv.PerMappingPick, lv.TotalPick,
+		); err != nil {
+			return fmt.Errorf("insert level %q: %w", lv.ID, err)
+		}
+		for _, mp := range lv.Mappings {
+			if _, err := tx.ExecContext(ctx,
+				`INSERT INTO published_table_level_mapping
+				 (id, published_table_level_id, source_table_id, source_level, sort_order)
+				 VALUES (?, ?, ?, ?, ?)`,
+				mp.ID, lv.ID, mp.SourceTableID, mp.SourceLevel, mp.SortOrder,
+			); err != nil {
+				return fmt.Errorf("insert mapping %q: %w", mp.ID, err)
+			}
+		}
+	}
+	return nil
+}
+
 func isUniqueSlugViolation(err error) bool {
 	if err == nil {
 		return false
@@ -86,7 +112,7 @@ func isUniqueSlugViolation(err error) bool {
 		strings.Contains(msg, "published_table.slug")
 }
 
-// Get は ID で取得する。存在しない場合は ErrPublishedTableNotFound を返す。
+// Get は ID で取得する。Levels/Mappings も同時に読む。
 func (r *PublishedTableRepoSQL) Get(ctx context.Context, id string) (domain.PublishedTable, error) {
 	row := r.db.QueryRowContext(ctx, publishedTableSelectColumns+` WHERE id = ?`, id)
 	t, err := r.scanRow(row)
@@ -96,10 +122,12 @@ func (r *PublishedTableRepoSQL) Get(ctx context.Context, id string) (domain.Publ
 	if err != nil {
 		return domain.PublishedTable{}, fmt.Errorf("get published_table %q: %w", id, err)
 	}
+	if err := r.loadLevels(ctx, &t); err != nil {
+		return domain.PublishedTable{}, err
+	}
 	return t, nil
 }
 
-// GetBySlug は slug で取得する。存在しない場合は ErrPublishedTableNotFound を返す。
 func (r *PublishedTableRepoSQL) GetBySlug(ctx context.Context, slug string) (domain.PublishedTable, error) {
 	row := r.db.QueryRowContext(ctx, publishedTableSelectColumns+` WHERE slug = ?`, slug)
 	t, err := r.scanRow(row)
@@ -109,10 +137,70 @@ func (r *PublishedTableRepoSQL) GetBySlug(ctx context.Context, slug string) (dom
 	if err != nil {
 		return domain.PublishedTable{}, fmt.Errorf("get published_table by slug %q: %w", slug, err)
 	}
+	if err := r.loadLevels(ctx, &t); err != nil {
+		return domain.PublishedTable{}, err
+	}
 	return t, nil
 }
 
-// List は sort_order, created_at 順に返す。
+// loadLevels は対象公開表の levels と mappings を 2 クエリで取得して結合する。
+func (r *PublishedTableRepoSQL) loadLevels(ctx context.Context, t *domain.PublishedTable) error {
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT id, published_table_id, name, sort_order, per_mapping_pick, total_pick
+		 FROM published_table_level
+		 WHERE published_table_id = ?
+		 ORDER BY sort_order ASC, id ASC`, t.ID)
+	if err != nil {
+		return fmt.Errorf("load levels: %w", err)
+	}
+	defer rows.Close()
+	var levels []domain.PublishedTableLevel
+	idx := map[string]int{}
+	for rows.Next() {
+		var lv domain.PublishedTableLevel
+		if err := rows.Scan(&lv.ID, &lv.PublishedTableID, &lv.Name, &lv.SortOrder, &lv.PerMappingPick, &lv.TotalPick); err != nil {
+			return fmt.Errorf("scan level: %w", err)
+		}
+		idx[lv.ID] = len(levels)
+		levels = append(levels, lv)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if len(levels) == 0 {
+		t.Levels = nil
+		return nil
+	}
+
+	mrows, err := r.db.QueryContext(ctx,
+		`SELECT m.id, m.published_table_level_id, m.source_table_id, m.source_level, m.sort_order
+		 FROM published_table_level_mapping m
+		 JOIN published_table_level l ON l.id = m.published_table_level_id
+		 WHERE l.published_table_id = ?
+		 ORDER BY m.sort_order ASC, m.id ASC`, t.ID)
+	if err != nil {
+		return fmt.Errorf("load mappings: %w", err)
+	}
+	defer mrows.Close()
+	for mrows.Next() {
+		var mp domain.PublishedTableLevelMapping
+		if err := mrows.Scan(&mp.ID, &mp.PublishedTableLevelID, &mp.SourceTableID, &mp.SourceLevel, &mp.SortOrder); err != nil {
+			return fmt.Errorf("scan mapping: %w", err)
+		}
+		i, ok := idx[mp.PublishedTableLevelID]
+		if !ok {
+			continue
+		}
+		levels[i].Mappings = append(levels[i].Mappings, mp)
+	}
+	if err := mrows.Err(); err != nil {
+		return err
+	}
+	t.Levels = levels
+	return nil
+}
+
+// List は一覧用。Levels は埋めない（軽量）。
 func (r *PublishedTableRepoSQL) List(ctx context.Context) ([]domain.PublishedTable, error) {
 	rows, err := r.db.QueryContext(ctx,
 		publishedTableSelectColumns+` ORDER BY sort_order ASC, created_at ASC`)
@@ -131,24 +219,25 @@ func (r *PublishedTableRepoSQL) List(ctx context.Context) ([]domain.PublishedTab
 	return out, rows.Err()
 }
 
-// Update は値を上書きする。slug の UNIQUE 違反は ErrSlugDuplicated を返す。
+// Update は子テーブル全削除 → 再 INSERT で行う（バッチ的、レコード数も小さい）。
 func (r *PublishedTableRepoSQL) Update(ctx context.Context, t domain.PublishedTable) error {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
 	owned := 0
 	if t.OwnedOnly {
 		owned = 1
 	}
-	preferOld := 0
-	if t.Pick.PreferOldPlay {
-		preferOld = 1
-	}
-	res, err := r.db.ExecContext(ctx,
+	res, err := tx.ExecContext(ctx,
 		`UPDATE published_table SET
-		   slug=?, display_name=?, symbol=?, source_table_id=?, owned_only=?,
-		   pick_per_level=?, pick_refresh_mode=?, prefer_old_play=?, sort_order=?,
-		   updated_at=datetime('now')
+		   slug=?, display_name=?, symbol=?, owned_only=?,
+		   pick_refresh_mode=?, sort_order=?, updated_at=datetime('now')
 		 WHERE id=?`,
-		t.Slug, t.DisplayName, t.Symbol, t.SourceTableID, owned,
-		t.Pick.PerLevel, string(t.Pick.RefreshMode), preferOld, t.SortOrder, t.ID,
+		t.Slug, t.DisplayName, t.Symbol, owned,
+		string(t.Pick.RefreshMode), t.SortOrder, t.ID,
 	)
 	if err != nil {
 		if isUniqueSlugViolation(err) {
@@ -160,19 +249,31 @@ func (r *PublishedTableRepoSQL) Update(ctx context.Context, t domain.PublishedTa
 	if n == 0 {
 		return usecase.ErrPublishedTableNotFound
 	}
+
+	// 子テーブルを全削除して再 INSERT
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM published_table_level WHERE published_table_id = ?`, t.ID); err != nil {
+		return fmt.Errorf("delete levels: %w", err)
+	}
+	// mapping は ON DELETE CASCADE で連鎖削除される
+	if err := r.insertLevels(ctx, tx, t.ID, t.Levels); err != nil {
+		return err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit: %w", err)
+	}
 	return nil
 }
 
-// Delete は ID で削除する。存在しなくてもエラーにしない（冪等）。
+// Delete は ID で削除する（Levels/Mappings は CASCADE で連鎖削除）。冪等。
 func (r *PublishedTableRepoSQL) Delete(ctx context.Context, id string) error {
-	_, err := r.db.ExecContext(ctx, `DELETE FROM published_table WHERE id=?`, id)
-	if err != nil {
+	if _, err := r.db.ExecContext(ctx, `DELETE FROM published_table WHERE id=?`, id); err != nil {
 		return fmt.Errorf("delete published_table %q: %w", id, err)
 	}
 	return nil
 }
 
-// SlugExists は slug が既に使われているかを返す。excludeID を指定すると自分自身は除外する。
 func (r *PublishedTableRepoSQL) SlugExists(ctx context.Context, slug string, excludeID string) (bool, error) {
 	var count int
 	var err error

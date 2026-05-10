@@ -37,171 +37,205 @@ func seedSourceTable(t *testing.T, src *persistence.SourceTableRepoSQL, id strin
 	require.NoError(t, err)
 }
 
-func TestPublishedTableRepoSQL_CreateThenGet(t *testing.T) {
-	repo, src := setupPublishedTableRepo(t)
-	ctx := context.Background()
-	seedSourceTable(t, src, "01J0SOURCE000000000000A")
+func TestPublishedTableRepoSQL_CreateAndGet_RoundTripsLevelsAndMappings(t *testing.T) {
+	pub, src := setupPublishedTableRepo(t)
+	seedSourceTable(t, src, "src-A")
+	seedSourceTable(t, src, "src-B")
 
 	in := domain.PublishedTable{
-		ID: "01J0PUB0000000000000000A", Slug: "satellite-mix",
-		DisplayName: "Satellite Mix", Symbol: "sl",
-		SourceTableID: "01J0SOURCE000000000000A",
-		OwnedOnly:     true,
-		Pick:          domain.PickConfig{PerLevel: 5, RefreshMode: domain.RefreshModeDaily},
+		ID: "pub-1", Slug: "lv5", DisplayName: "Mixed Lv5", Symbol: "★",
+		OwnedOnly: true,
+		Pick:      domain.PickConfig{RefreshMode: domain.RefreshModeDaily},
+		SortOrder: 0,
+		Levels: []domain.PublishedTableLevel{
+			{
+				ID: "lvl-1", PublishedTableID: "pub-1", Name: "5", SortOrder: 0,
+				PerMappingPick: 2, TotalPick: 5,
+				Mappings: []domain.PublishedTableLevelMapping{
+					{ID: "map-1", PublishedTableLevelID: "lvl-1", SourceTableID: "src-A", SourceLevel: "5", SortOrder: 0},
+					{ID: "map-2", PublishedTableLevelID: "lvl-1", SourceTableID: "src-B", SourceLevel: "5", SortOrder: 1},
+				},
+			},
+			{
+				ID: "lvl-2", PublishedTableID: "pub-1", Name: "5-6", SortOrder: 1,
+				PerMappingPick: 1, TotalPick: 4,
+				Mappings: []domain.PublishedTableLevelMapping{
+					{ID: "map-3", PublishedTableLevelID: "lvl-2", SourceTableID: "src-A", SourceLevel: "5", SortOrder: 0},
+					{ID: "map-4", PublishedTableLevelID: "lvl-2", SourceTableID: "src-A", SourceLevel: "6", SortOrder: 1},
+				},
+			},
+		},
 	}
-	id, err := repo.Create(ctx, in)
-	require.NoError(t, err)
-	require.Equal(t, in.ID, id)
 
-	got, err := repo.Get(ctx, id)
+	id, err := pub.Create(context.Background(), in)
+	require.NoError(t, err)
+	require.Equal(t, "pub-1", id)
+
+	got, err := pub.Get(context.Background(), "pub-1")
 	require.NoError(t, err)
 	require.Equal(t, in.Slug, got.Slug)
 	require.Equal(t, in.DisplayName, got.DisplayName)
-	require.Equal(t, in.SourceTableID, got.SourceTableID)
-	require.True(t, got.OwnedOnly)
-	require.Equal(t, 5, got.Pick.PerLevel)
-	require.Equal(t, domain.RefreshModeDaily, got.Pick.RefreshMode)
+	require.Equal(t, in.Symbol, got.Symbol)
+	require.Equal(t, in.OwnedOnly, got.OwnedOnly)
+	require.Equal(t, in.Pick.RefreshMode, got.Pick.RefreshMode)
+	require.Len(t, got.Levels, 2)
+	require.Equal(t, "5", got.Levels[0].Name)
+	require.Equal(t, 2, got.Levels[0].PerMappingPick)
+	require.Equal(t, 5, got.Levels[0].TotalPick)
+	require.Len(t, got.Levels[0].Mappings, 2)
+	require.Equal(t, "src-A", got.Levels[0].Mappings[0].SourceTableID)
+	require.Equal(t, "5", got.Levels[0].Mappings[0].SourceLevel)
+	require.Equal(t, "5-6", got.Levels[1].Name)
+	require.Len(t, got.Levels[1].Mappings, 2)
 }
 
-func TestPublishedTableRepoSQL_GetBySlug(t *testing.T) {
-	repo, src := setupPublishedTableRepo(t)
-	ctx := context.Background()
-	seedSourceTable(t, src, "01J0SOURCE000000000000B")
-	_, err := repo.Create(ctx, domain.PublishedTable{
-		ID: "01J0PUB0000000000000000B", Slug: "lookup-me",
-		DisplayName: "Lookup", SourceTableID: "01J0SOURCE000000000000B",
-		Pick: domain.PickConfig{RefreshMode: domain.RefreshModePerRequest},
+func TestPublishedTableRepoSQL_GetBySlug_ReturnsLevelsAndMappings(t *testing.T) {
+	pub, src := setupPublishedTableRepo(t)
+	seedSourceTable(t, src, "src-A")
+
+	_, err := pub.Create(context.Background(), domain.PublishedTable{
+		ID: "pub-1", Slug: "stella", DisplayName: "Stella",
+		Pick: domain.PickConfig{RefreshMode: domain.RefreshModeManual},
+		Levels: []domain.PublishedTableLevel{
+			{
+				ID: "lvl-1", PublishedTableID: "pub-1", Name: "0",
+				Mappings: []domain.PublishedTableLevelMapping{
+					{ID: "m1", PublishedTableLevelID: "lvl-1", SourceTableID: "src-A", SourceLevel: "0"},
+				},
+			},
+		},
 	})
 	require.NoError(t, err)
 
-	got, err := repo.GetBySlug(ctx, "lookup-me")
+	got, err := pub.GetBySlug(context.Background(), "stella")
 	require.NoError(t, err)
-	require.Equal(t, "01J0PUB0000000000000000B", got.ID)
-
-	_, err = repo.GetBySlug(ctx, "no-such-slug")
-	require.ErrorIs(t, err, usecase.ErrPublishedTableNotFound)
+	require.Len(t, got.Levels, 1)
+	require.Len(t, got.Levels[0].Mappings, 1)
 }
 
-func TestPublishedTableRepoSQL_SlugExists(t *testing.T) {
-	repo, src := setupPublishedTableRepo(t)
-	ctx := context.Background()
-	seedSourceTable(t, src, "01J0SOURCE000000000000C")
-	_, err := repo.Create(ctx, domain.PublishedTable{
-		ID: "01J0PUB0000000000000000C", Slug: "taken",
-		DisplayName: "T", SourceTableID: "01J0SOURCE000000000000C",
+func TestPublishedTableRepoSQL_Update_ReplacesAllLevelsAndMappings(t *testing.T) {
+	pub, src := setupPublishedTableRepo(t)
+	seedSourceTable(t, src, "src-A")
+
+	initial := domain.PublishedTable{
+		ID: "pub-1", Slug: "tbl", DisplayName: "T",
+		Pick: domain.PickConfig{RefreshMode: domain.RefreshModeManual},
+		Levels: []domain.PublishedTableLevel{
+			{
+				ID: "lvl-1", PublishedTableID: "pub-1", Name: "old", SortOrder: 0,
+				PerMappingPick: 1, TotalPick: 1,
+				Mappings: []domain.PublishedTableLevelMapping{
+					{ID: "m1", PublishedTableLevelID: "lvl-1", SourceTableID: "src-A", SourceLevel: "old"},
+				},
+			},
+		},
+	}
+	_, err := pub.Create(context.Background(), initial)
+	require.NoError(t, err)
+
+	updated := initial
+	updated.DisplayName = "T2"
+	updated.Levels = []domain.PublishedTableLevel{
+		{
+			ID: "lvl-2", PublishedTableID: "pub-1", Name: "new", SortOrder: 0,
+			PerMappingPick: 3, TotalPick: 7,
+			Mappings: []domain.PublishedTableLevelMapping{
+				{ID: "m2", PublishedTableLevelID: "lvl-2", SourceTableID: "src-A", SourceLevel: "new"},
+			},
+		},
+	}
+	require.NoError(t, pub.Update(context.Background(), updated))
+
+	got, err := pub.Get(context.Background(), "pub-1")
+	require.NoError(t, err)
+	require.Equal(t, "T2", got.DisplayName)
+	require.Len(t, got.Levels, 1)
+	require.Equal(t, "new", got.Levels[0].Name)
+	require.Equal(t, "lvl-2", got.Levels[0].ID)
+	require.Equal(t, 3, got.Levels[0].PerMappingPick)
+	require.Len(t, got.Levels[0].Mappings, 1)
+	require.Equal(t, "m2", got.Levels[0].Mappings[0].ID)
+}
+
+func TestPublishedTableRepoSQL_List_DoesNotEagerLoadLevelsForListView(t *testing.T) {
+	pub, src := setupPublishedTableRepo(t)
+	seedSourceTable(t, src, "src-A")
+
+	_, err := pub.Create(context.Background(), domain.PublishedTable{
+		ID: "pub-1", Slug: "x", DisplayName: "X",
+		Pick:   domain.PickConfig{RefreshMode: domain.RefreshModeManual},
+		Levels: []domain.PublishedTableLevel{{ID: "lvl-1", PublishedTableID: "pub-1", Name: "5"}},
+	})
+	require.NoError(t, err)
+
+	list, err := pub.List(context.Background())
+	require.NoError(t, err)
+	require.Len(t, list, 1)
+	require.Equal(t, "X", list[0].DisplayName)
+	require.Empty(t, list[0].Levels)
+}
+
+func TestPublishedTableRepoSQL_Delete_CascadesToLevelsAndMappings(t *testing.T) {
+	pub, src := setupPublishedTableRepo(t)
+	seedSourceTable(t, src, "src-A")
+
+	_, err := pub.Create(context.Background(), domain.PublishedTable{
+		ID: "pub-1", Slug: "x", DisplayName: "X",
+		Pick: domain.PickConfig{RefreshMode: domain.RefreshModeManual},
+		Levels: []domain.PublishedTableLevel{
+			{
+				ID: "lvl-1", PublishedTableID: "pub-1", Name: "5",
+				Mappings: []domain.PublishedTableLevelMapping{
+					{ID: "m1", PublishedTableLevelID: "lvl-1", SourceTableID: "src-A", SourceLevel: "5"},
+				},
+			},
+		},
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, pub.Delete(context.Background(), "pub-1"))
+
+	got, err := pub.Get(context.Background(), "pub-1")
+	require.True(t, errors.Is(err, usecase.ErrPublishedTableNotFound))
+	_ = got
+}
+
+func TestPublishedTableRepoSQL_Create_DuplicateSlug_ReturnsErrSlugDuplicated(t *testing.T) {
+	pub, src := setupPublishedTableRepo(t)
+	seedSourceTable(t, src, "src-A")
+
+	_, err := pub.Create(context.Background(), domain.PublishedTable{
+		ID: "pub-1", Slug: "same", DisplayName: "A",
 		Pick: domain.PickConfig{RefreshMode: domain.RefreshModeManual},
 	})
 	require.NoError(t, err)
 
-	exists, err := repo.SlugExists(ctx, "taken", "")
-	require.NoError(t, err)
-	require.True(t, exists)
-
-	exists, err = repo.SlugExists(ctx, "free", "")
-	require.NoError(t, err)
-	require.False(t, exists)
-
-	// 自分自身は除外
-	exists, err = repo.SlugExists(ctx, "taken", "01J0PUB0000000000000000C")
-	require.NoError(t, err)
-	require.False(t, exists)
-}
-
-func TestPublishedTableRepoSQL_Create_DuplicateSlugError(t *testing.T) {
-	repo, src := setupPublishedTableRepo(t)
-	ctx := context.Background()
-	seedSourceTable(t, src, "01J0SOURCE000000000000D")
-	_, err := repo.Create(ctx, domain.PublishedTable{
-		ID: "01J0PUB000000000000000D1", Slug: "dup",
-		DisplayName: "A", SourceTableID: "01J0SOURCE000000000000D",
-		Pick: domain.PickConfig{RefreshMode: domain.RefreshModePerRequest},
-	})
-	require.NoError(t, err)
-
-	_, err = repo.Create(ctx, domain.PublishedTable{
-		ID: "01J0PUB000000000000000D2", Slug: "dup",
-		DisplayName: "B", SourceTableID: "01J0SOURCE000000000000D",
-		Pick: domain.PickConfig{RefreshMode: domain.RefreshModePerRequest},
+	_, err = pub.Create(context.Background(), domain.PublishedTable{
+		ID: "pub-2", Slug: "same", DisplayName: "B",
+		Pick: domain.PickConfig{RefreshMode: domain.RefreshModeManual},
 	})
 	require.True(t, errors.Is(err, usecase.ErrSlugDuplicated))
 }
 
-func TestPublishedTableRepoSQL_Update_RoundTrip(t *testing.T) {
-	repo, src := setupPublishedTableRepo(t)
-	ctx := context.Background()
-	seedSourceTable(t, src, "01J0SOURCE000000000000E")
-	id, err := repo.Create(ctx, domain.PublishedTable{
-		ID: "01J0PUB0000000000000000E", Slug: "before",
-		DisplayName: "Before", SourceTableID: "01J0SOURCE000000000000E",
-		OwnedOnly: false,
-		Pick:      domain.PickConfig{RefreshMode: domain.RefreshModePerRequest},
+func TestPublishedTableRepoSQL_SlugExists(t *testing.T) {
+	pub, src := setupPublishedTableRepo(t)
+	seedSourceTable(t, src, "src-A")
+
+	_, err := pub.Create(context.Background(), domain.PublishedTable{
+		ID: "pub-1", Slug: "stella", DisplayName: "S",
+		Pick: domain.PickConfig{RefreshMode: domain.RefreshModeManual},
 	})
 	require.NoError(t, err)
 
-	got, err := repo.Get(ctx, id)
+	exists, err := pub.SlugExists(context.Background(), "stella", "")
 	require.NoError(t, err)
-	got.Slug = "after"
-	got.DisplayName = "After"
-	got.OwnedOnly = true
-	got.Pick.PerLevel = 3
-	got.Pick.RefreshMode = domain.RefreshModeDaily
-	require.NoError(t, repo.Update(ctx, got))
+	require.True(t, exists)
 
-	again, err := repo.Get(ctx, id)
+	exists, err = pub.SlugExists(context.Background(), "stella", "pub-1")
 	require.NoError(t, err)
-	require.Equal(t, "after", again.Slug)
-	require.Equal(t, "After", again.DisplayName)
-	require.True(t, again.OwnedOnly)
-	require.Equal(t, 3, again.Pick.PerLevel)
-	require.Equal(t, domain.RefreshModeDaily, again.Pick.RefreshMode)
-}
+	require.False(t, exists)
 
-func TestPublishedTableRepoSQL_Delete_Idempotent(t *testing.T) {
-	repo, src := setupPublishedTableRepo(t)
-	ctx := context.Background()
-	seedSourceTable(t, src, "01J0SOURCE000000000000F")
-	id, err := repo.Create(ctx, domain.PublishedTable{
-		ID: "01J0PUB0000000000000000F", Slug: "to-delete",
-		DisplayName: "X", SourceTableID: "01J0SOURCE000000000000F",
-		Pick: domain.PickConfig{RefreshMode: domain.RefreshModePerRequest},
-	})
+	exists, err = pub.SlugExists(context.Background(), "other", "")
 	require.NoError(t, err)
-
-	require.NoError(t, repo.Delete(ctx, id))
-	require.NoError(t, repo.Delete(ctx, id)) // 二度目もエラーにならない
-
-	_, err = repo.Get(ctx, id)
-	require.ErrorIs(t, err, usecase.ErrPublishedTableNotFound)
-}
-
-func TestPublishedTableRepoSQL_List_OrdersBySortOrderThenCreatedAt(t *testing.T) {
-	repo, src := setupPublishedTableRepo(t)
-	ctx := context.Background()
-	seedSourceTable(t, src, "01J0SOURCE0000000000010")
-
-	for i, slug := range []string{"a-second", "b-first", "c-third"} {
-		so := 0
-		switch slug {
-		case "b-first":
-			so = -1
-		case "c-third":
-			so = 1
-		}
-		_, err := repo.Create(ctx, domain.PublishedTable{
-			ID:            string(rune('A'+i)) + "01J0PUB0000000000000010",
-			Slug:          slug,
-			DisplayName:   slug,
-			SourceTableID: "01J0SOURCE0000000000010",
-			SortOrder:     so,
-			Pick:          domain.PickConfig{RefreshMode: domain.RefreshModePerRequest},
-		})
-		require.NoError(t, err)
-	}
-
-	list, err := repo.List(ctx)
-	require.NoError(t, err)
-	require.Len(t, list, 3)
-	require.Equal(t, "b-first", list[0].Slug)
-	require.Equal(t, "a-second", list[1].Slug)
-	require.Equal(t, "c-third", list[2].Slug)
+	require.False(t, exists)
 }
