@@ -66,7 +66,7 @@ func buildHTMLPageData(pub domain.PublishedTable, r domain.PickResult) htmlPageD
 	for _, level := range r.LevelOrder {
 		var charts []htmlChart
 		for _, c := range r.Charts {
-			if c.Level != level {
+			if c.PublicLevel != level {
 				continue
 			}
 			owned := c.IsOwned
@@ -75,12 +75,14 @@ func buildHTMLPageData(pub domain.PublishedTable, r domain.PickResult) htmlPageD
 			}
 			// 行頭セルは譜面単位 symbol (v2 で複数ソース合成時に区別するため)。
 			// SourceChart.Symbol が空の場合 (fetcher 経由構築など) は pub.Symbol で代替。
+			// 行頭セルのレベル文字は c.Level (= EnrichedChart.Level = ソース表側のレベル)。
+			// 公開レベル名 (level) はグルーピング判定と <h2> 見出しで使う。
 			symbol := c.Symbol
 			if symbol == "" {
 				symbol = pub.Symbol
 			}
 			charts = append(charts, htmlChart{
-				Level:    symbol + level,
+				Level:    symbol + c.Level,
 				Title:    c.Title,
 				Artist:   c.Artist,
 				LR2IRURL: lr2irURL(c.MD5),

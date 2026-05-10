@@ -9,6 +9,7 @@ import (
 
 	"github.com/meta-BE/bms-random-table-compositor/internal/domain"
 	"github.com/meta-BE/bms-random-table-compositor/internal/port"
+	"github.com/meta-BE/bms-random-table-compositor/internal/usecase"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -163,4 +164,53 @@ func TestHandlerHTML_ColumnsAndLinks(t *testing.T) {
 	// NoMD5 行: タイトルが LR2IR リンクで囲まれない
 	// (md5 が空のためリンク URL は生成されない)
 	assert.Contains(t, bodyStr, "NoMD5")
+}
+
+// 行頭セルはソースレベル (EnrichedChart.Level) を Symbol と組み合わせる。
+// 公開レベル名 (PublicLevel) がソースと異なっていても、行頭セルにはソースレベルが入る。
+// 一方で <h2> 見出しは公開レベル名でグルーピングされる。
+func TestHandlerHTML_RowCellUsesSourceLevel_HeadingUsesPublicLevel(t *testing.T) {
+	fx := newHTTPFixture(t)
+	srcID := "01JSRC0HTML000000000SRCLV"
+	_, err := fx.srcRepo.Create(context.Background(), domain.SourceTable{
+		ID: srcID, InputURL: "https://example.com/t.html",
+		InputKind: domain.InputKindHTML, DisplayName: "T", Name: "T",
+		LevelOrder:      []string{"5"},
+		LastFetchStatus: domain.FetchStatusOK,
+	})
+	require.NoError(t, err)
+	require.NoError(t, fx.srcRepo.SaveFetched(context.Background(), srcID, port.FetchedTable{
+		Header: domain.BMSTableHeader{Name: "T", Symbol: "sl", LevelOrder: []string{"5"}},
+		Charts: []domain.SourceChart{
+			{Position: 0, MD5: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Level: "5", Title: "Song5", Artist: "A", Raw: map[string]any{"md5": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}},
+		},
+	}, time.Now()))
+
+	// 公開レベル名はソースとは異なる "5-mix"
+	_, err = fx.pubUC.Create(context.Background(), usecase.CreatePublishedTableInput{
+		Slug: "src-vs-public", DisplayName: "X", Symbol: "★",
+		RefreshMode: domain.RefreshModePerRequest,
+		Levels: []usecase.PublishedTableLevelInput{
+			{
+				Name: "5-mix", PerMappingPick: 1, TotalPick: 0,
+				Mappings: []usecase.PublishedTableLevelMappingInput{
+					{SourceTableID: srcID, SourceLevel: "5"},
+				},
+			},
+		},
+	})
+	require.NoError(t, err)
+
+	resp, err := http.Get(fx.mux.URL + "/src-vs-public")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	bodyStr := string(body)
+
+	// 行頭セル (td.level) は Source Symbol("sl") + Source Level("5") = "sl5"。
+	// 公開レベル名 "5-mix" は行頭セルに混ざってはいけない。
+	assert.Contains(t, bodyStr, ">sl5<", "行頭セルは Source Symbol + Source Level のはず")
+	assert.NotContains(t, bodyStr, ">sl5-mix<", "行頭セルに公開レベル名が紛れてはいけない")
+	// <h2> 見出しは公開レベル名でグルーピング (pub.Symbol="★" + PublicLevel="5-mix")
+	assert.Contains(t, bodyStr, "★5-mix")
 }

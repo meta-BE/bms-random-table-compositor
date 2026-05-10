@@ -497,22 +497,24 @@ func TestPickUseCase_LevelOrderRespectsLevels(t *testing.T) {
 	require.Equal(t, []string{"Lc", "La", "Lb"}, r.LevelOrder)
 }
 
-// 結果の chart.Level は公開レベル名 (lv.Name) で上書きされる。
-// HTTP 応答 / data.json で公開レベル名を見せるための仕様。
-func TestPickUseCase_LevelOverwrittenWithPublicLevelName(t *testing.T) {
+// PickedChart は EnrichedChart.Level (= ソース表側のレベル) を保持しつつ、
+// 公開レベル名は PublicLevel フィールドに別途保存する。
+// HTML 行頭セルではソースレベルを使い、data.json/header.json では公開レベル名を使う想定。
+func TestPickUseCase_PublicLevelTrackedSeparately(t *testing.T) {
 	f := newPickUCFixture(t)
-	f.seedSource(t, "SRC1", []string{"raw-level"}, domain.FetchStatusOK, []domain.SourceChart{
-		chartFixture("SRC1", "raw-level", 0, "x"),
+	f.seedSource(t, "SRC1", []string{"5"}, domain.FetchStatusOK, []domain.SourceChart{
+		chartFixture("SRC1", "5", 0, "x"),
 	})
 	f.seedPubWithLevels(t, "PUB1", "p1", false, domain.RefreshModePerRequest, []levelSpec{
-		{name: "公開LV5", m: 1, n: 1, mappings: []mappingSpec{{srcID: "SRC1", level: "raw-level"}}},
+		{name: "5-mix", m: 1, n: 1, mappings: []mappingSpec{{srcID: "SRC1", level: "5"}}},
 	})
 
 	r, _, err := f.uc.PickBySlug(context.Background(), "p1")
 	require.NoError(t, err)
 	require.Len(t, r.Charts, 1)
-	require.Equal(t, "公開LV5", r.Charts[0].Level, "出力 chart の Level は公開レベル名で上書きされる")
-	require.Equal(t, []string{"公開LV5"}, r.LevelOrder)
+	require.Equal(t, "5", r.Charts[0].Level, "ソースレベル (EnrichedChart.Level) は保持される")
+	require.Equal(t, "5-mix", r.Charts[0].PublicLevel, "公開レベル名は PublicLevel フィールドに入る")
+	require.Equal(t, []string{"5-mix"}, r.LevelOrder)
 }
 
 // OwnedOnly: pool 構築時点で IsOwned=false の譜面が落ちる（既存仕様の継続）。

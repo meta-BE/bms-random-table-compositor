@@ -30,10 +30,11 @@ func newDataHandler(deps Deps) http.HandlerFunc {
 	}
 }
 
-// mergeChart は EnrichedChart.Raw をベースに level/md5/sha256/title/artist を上書きしてマップを返す。
+// mergeChart は PickedChart.Raw をベースに level/md5/sha256/title/artist を上書きしてマップを返す。
+// level は公開レベル名 (PublicLevel) で出力する (beatoraja のレベル別グルーピング維持のため)。
 // 表固有フィールド（url, url_diff, lr2_bmsid 等）はパススルーされる。
 // is_owned / last_played_at は beatoraja 互換維持のため data.json には出力しない。
-func mergeChart(c domain.EnrichedChart) map[string]any {
+func mergeChart(c domain.PickedChart) map[string]any {
 	out := make(map[string]any, len(c.Raw)+5)
 	for k, v := range c.Raw {
 		out[k] = v
@@ -42,7 +43,7 @@ func mergeChart(c domain.EnrichedChart) map[string]any {
 	if c.SHA256 != "" {
 		out["sha256"] = c.SHA256
 	}
-	out["level"] = c.Level
+	out["level"] = c.PublicLevel
 	out["title"] = c.Title
 	out["artist"] = c.Artist
 	return out

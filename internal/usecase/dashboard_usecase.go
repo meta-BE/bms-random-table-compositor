@@ -85,7 +85,7 @@ func (d *DashboardUseCase) snapshotPicks() []domain.PickSnapshotEntry {
 	for id, r := range raw {
 		counts := map[string]int{}
 		for _, c := range r.Charts {
-			counts[c.Level]++
+			counts[c.PublicLevel]++
 		}
 		out = append(out, domain.PickSnapshotEntry{
 			PublishedID: id,

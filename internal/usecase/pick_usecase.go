@@ -111,7 +111,7 @@ func (u *PickUseCase) regenerate(ctx context.Context, pub domain.PublishedTable)
 	baseSeed, seedKey := u.makeSeed(pub)
 	now := u.clock.Now()
 
-	var finalCharts []domain.EnrichedChart
+	var finalCharts []domain.PickedChart
 	var finalLevelOrder []string
 
 	for _, lv := range pub.Levels {
@@ -140,11 +140,12 @@ func (u *PickUseCase) regenerate(ctx context.Context, pub domain.PublishedTable)
 // pickLevel は 1 公開レベル分のフェーズ 1 + フェーズ 2 を実行する。
 // ソース譜面の LoadCharts はソース表 ID ごとに 1 度だけ呼ぶ（マッピング数が多い場合の重複呼び出し回避）。
 // dedup の主キーは MD5、空なら SHA256 をフォールバック。
-// 出力する EnrichedChart の Level は公開レベル名 (lv.Name) で上書きする。
+// 出力する PickedChart は EnrichedChart (ソース由来) + PublicLevel (公開レベル名 lv.Name) を持つ。
+// EnrichedChart.Level はソース側のレベルそのままで、HTML 行頭セル等で参照される。
 func (u *PickUseCase) pickLevel(
 	ctx context.Context, pub domain.PublishedTable, lv domain.PublishedTableLevel,
 	rng *rand.Rand, now time.Time,
-) ([]domain.EnrichedChart, error) {
+) ([]domain.PickedChart, error) {
 	// ソース表 ID → EnrichedChart[] のキャッシュ。同じ source_table_id を複数マッピングが参照しても LoadCharts は 1 回。
 	sources := map[string][]domain.EnrichedChart{}
 	for _, mp := range lv.Mappings {
@@ -233,12 +234,10 @@ func (u *PickUseCase) pickLevel(
 		picked = append(picked, taken...)
 	}
 
-	// 出力前: HTTP / data.json で公開レベル名を見せるため、各 chart の Level を lv.Name で上書き。
-	out := make([]domain.EnrichedChart, 0, len(picked))
+	// 出力前: PickedChart に包んで PublicLevel を併記する (Level はソース側のまま)。
+	out := make([]domain.PickedChart, 0, len(picked))
 	for _, c := range picked {
-		cc := c
-		cc.Level = lv.Name
-		out = append(out, cc)
+		out = append(out, domain.PickedChart{EnrichedChart: c, PublicLevel: lv.Name})
 	}
 	sort.SliceStable(out, func(a, b int) bool { return out[a].Position < out[b].Position })
 	return out, nil
