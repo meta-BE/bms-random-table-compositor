@@ -17,6 +17,7 @@ import (
 	"github.com/meta-BE/bms-random-table-compositor/internal/adapter/paths"
 	"github.com/meta-BE/bms-random-table-compositor/internal/adapter/persistence"
 	"github.com/meta-BE/bms-random-table-compositor/internal/adapter/randsrc"
+	"github.com/meta-BE/bms-random-table-compositor/internal/adapter/weighter"
 	"github.com/meta-BE/bms-random-table-compositor/internal/app/handler"
 	"github.com/meta-BE/bms-random-table-compositor/internal/domain"
 	"github.com/meta-BE/bms-random-table-compositor/internal/port"
@@ -128,7 +129,7 @@ func Bootstrap() (*Services, error) {
 	randFactory := port.RandSourceFactory(func(seed int64) port.RandSource {
 		return randsrc.NewMathRandSource(seed)
 	})
-	pickUC := usecase.NewPickUseCase(pubRepo, sourceRepo, pickStore, systemClock, randFactory, lg)
+	pickUC := usecase.NewPickUseCase(pubRepo, sourceRepo, pickStore, systemClock, randFactory, lg, weighter.UniformWeighter{})
 	pickHandler := handler.NewPickHandler(pickUC)
 	songdataHandler := handler.NewSongdataHandler(sourceAttacher, configUC, pickUC)
 
