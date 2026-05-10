@@ -102,13 +102,33 @@ func (f *httpFixture) seedPublished(t *testing.T, slug, sourceID string, mode do
 	if len(symbolOverride) > 0 {
 		symbol = symbolOverride[0]
 	}
-	// 旧 PerLevel を新仕様の TotalPick として再現する。
 	src, err := f.srcRepo.Get(context.Background(), sourceID)
 	require.NoError(t, err)
-	levels := make([]usecase.PublishedTableLevelInput, 0, len(src.LevelOrder))
-	for _, lv := range src.LevelOrder {
+
+	// 旧 PerLevel セマンティクスへの後方互換マッピング:
+	// perLevel == 0 (旧「全件ピック」) → PerMappingPick=巨大値で phase 1 が全件取る
+	// perLevel  > 0                   → PerMappingPick=perLevel で phase 1 が perLevel 件取る
+	mPerMapping := perLevel
+	if perLevel == 0 {
+		// 実質無制限。weightedSampleWithoutReplacement は make([]T, 0, k) で k 分の容量を
+		// 即時確保するため、過大な値を渡すとテストが OOM/時間切れになる。テストの pool は高々
+		// 数十件なので 999999 で十分。
+		mPerMapping = 999999
+	}
+
+	// src.LevelOrder が空のケース (例: 未フェッチ source の 503 テスト) でも、
+	// pickLevel が source の状態を検査できるよう最低 1 レベルは作る。
+	// 公開レベル名は空不可なので "all" をフォールバックに使う (source 側はマッチングしない空文字列 OK)。
+	srcLevels := src.LevelOrder
+	if len(srcLevels) == 0 {
+		srcLevels = []string{"all"}
+	}
+	levels := make([]usecase.PublishedTableLevelInput, 0, len(srcLevels))
+	for _, lv := range srcLevels {
 		levels = append(levels, usecase.PublishedTableLevelInput{
-			Name: lv, PerMappingPick: 0, TotalPick: perLevel,
+			Name:           lv,
+			PerMappingPick: mPerMapping,
+			TotalPick:      0,
 			Mappings: []usecase.PublishedTableLevelMappingInput{
 				{SourceTableID: sourceID, SourceLevel: lv},
 			},
