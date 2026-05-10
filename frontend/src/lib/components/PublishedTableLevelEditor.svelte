@@ -138,19 +138,19 @@
                 <td>
                   <div class="flex flex-wrap gap-1 items-center">
                     {#each lv.mappings as mp, j (j)}
-                      <div class="badge badge-outline gap-1 p-2">
-                        <select class="select select-xs" bind:value={mp.sourceTableId}>
+                      <div class="join">
+                        <select class="join-item select select-bordered select-xs" bind:value={mp.sourceTableId}>
                           {#each sources as s}
                             <option value={s.id}>{s.displayName || s.name || s.inputUrl}</option>
                           {/each}
                         </select>
-                        <select class="select select-xs" bind:value={mp.sourceLevel}>
+                        <select class="join-item select select-bordered select-xs" bind:value={mp.sourceLevel}>
                           <option value="">(未選択)</option>
                           {#each sourceLevelOptions(mp.sourceTableId) as opt}
                             <option value={opt.value}>{opt.label}</option>
                           {/each}
                         </select>
-                        <button class="btn btn-xs btn-ghost" type="button" on:click={() => removeMapping(i, j)}>✕</button>
+                        <button class="join-item btn btn-xs" type="button" on:click={() => removeMapping(i, j)}>✕</button>
                       </div>
                     {/each}
                     <button class="btn btn-xs btn-outline" type="button" on:click={() => addMapping(i)} disabled={sources.length === 0}>+</button>
@@ -175,9 +175,6 @@
             {/each}
           </tbody>
         </table>
-        <p class="text-xs opacity-70 mt-2">
-          m = レベルごとピック曲数 / n = 全体ピック曲数。詳細はマウスホバーで表示。
-        </p>
       </div>
     {/if}
   </div>
