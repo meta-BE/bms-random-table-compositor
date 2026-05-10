@@ -14,17 +14,21 @@ import (
 	"github.com/meta-BE/bms-random-table-compositor/internal/port"
 )
 
-// PickUseCase はピック生成を担う。spec §7.2 のフローを実装。
+// PickUseCase はピック生成を担う。
+// docs/superpowers/specs/2026-05-10-multi-source-table-composition-design.md §3 の
+// フェーズ 1 (各マッピングから m 曲) + フェーズ 2 (合計 n 曲まで補填) を実装する。
 type PickUseCase struct {
-	pubRepo port.PublishedTableRepo
-	srcRepo port.SourceTableRepo
-	store   *PickResultStore
-	clock   port.Clock
-	randNew port.RandSourceFactory
-	log     *slog.Logger
+	pubRepo  port.PublishedTableRepo
+	srcRepo  port.SourceTableRepo
+	store    *PickResultStore
+	clock    port.Clock
+	randNew  port.RandSourceFactory
+	log      *slog.Logger
+	weighter port.Weighter
 }
 
 // NewPickUseCase は新しい PickUseCase を作る。
+// weighter は重み付き非復元サンプリング時の重み関数。MVP では UniformWeighter を渡す。
 func NewPickUseCase(
 	pubRepo port.PublishedTableRepo,
 	srcRepo port.SourceTableRepo,
@@ -32,10 +36,11 @@ func NewPickUseCase(
 	clock port.Clock,
 	randNew port.RandSourceFactory,
 	log *slog.Logger,
+	weighter port.Weighter,
 ) *PickUseCase {
 	return &PickUseCase{
 		pubRepo: pubRepo, srcRepo: srcRepo, store: store,
-		clock: clock, randNew: randNew, log: log,
+		clock: clock, randNew: randNew, log: log, weighter: weighter,
 	}
 }
 
@@ -99,65 +104,202 @@ func (u *PickUseCase) cachedIfFresh(pub domain.PublishedTable) (domain.PickResul
 }
 
 // regenerate はピック結果を一から作成する。
+// pub.Levels を SortOrder 順に走査し、各公開レベルごとに pickLevel() でフェーズ 1+2 を実行する。
+// 各公開レベルのシードは baseSeed XOR fnv32(level.ID) として独立させ、レベル単位の
+// 決定論性を確保する（公開レベル順や追加・削除の影響が他レベルに波及しない）。
 func (u *PickUseCase) regenerate(ctx context.Context, pub domain.PublishedTable) (domain.PickResult, error) {
-	src, err := u.srcRepo.Get(ctx, pub.SourceTableID)
-	if err != nil {
-		return domain.PickResult{}, fmt.Errorf("get source table %q: %w", pub.SourceTableID, err)
-	}
-	if src.LastFetchStatus == domain.FetchStatusNever {
-		return domain.PickResult{}, ErrSourceNotFetched
-	}
-	all, err := u.srcRepo.LoadCharts(ctx, pub.SourceTableID, port.ChartQuery{
-		OwnedOnly: pub.OwnedOnly,
-	})
-	if err != nil {
-		return domain.PickResult{}, fmt.Errorf("load charts %q: %w", pub.SourceTableID, err)
-	}
+	baseSeed, seedKey := u.makeSeed(pub)
+	now := u.clock.Now()
 
-	// レベル別グルーピング
-	byLevel := map[string][]domain.EnrichedChart{}
-	for _, c := range all {
-		byLevel[c.Level] = append(byLevel[c.Level], c)
-	}
-
-	// シード生成
-	seed, seedKey := u.makeSeed(pub)
-
-	// レベル並び順を先に確定する。
-	// rng の消費順を Go の map 反復順（仕様上ランダム化される）に依存させると、
-	// 同一シードでも実行ごとに各レベルに割り当たる乱数列がズレて
-	// daily モードでも再起動ごとに結果が変わる。これを避けるため、
-	// シャッフル前に決定論的なレベル順序を組み立てる。
-	levelOrder := buildLevelOrder(src.LevelOrder, byLevel)
-
-	// レベル別シャッフル + 先頭 N 曲（または全件）。levelOrder の順に rng を消費する。
-	rng := rand.New(u.randNew(seed))
 	var finalCharts []domain.EnrichedChart
 	var finalLevelOrder []string
-	for _, level := range levelOrder {
-		charts, ok := byLevel[level]
-		if !ok || len(charts) == 0 {
+
+	for _, lv := range pub.Levels {
+		levelSeed := baseSeed ^ int64(fnv32(lv.ID))
+		rng := rand.New(u.randNew(levelSeed))
+		picked, err := u.pickLevel(ctx, pub, lv, rng, now)
+		if err != nil {
+			return domain.PickResult{}, fmt.Errorf("pick level %q: %w", lv.Name, err)
+		}
+		if len(picked) == 0 {
 			continue
 		}
-		// position 昇順でいったん並べ替え（決定論性保証）
-		sort.SliceStable(charts, func(i, j int) bool { return charts[i].Position < charts[j].Position })
-		if pub.Pick.PerLevel > 0 && len(charts) > pub.Pick.PerLevel {
-			rng.Shuffle(len(charts), func(i, j int) { charts[i], charts[j] = charts[j], charts[i] })
-			charts = charts[:pub.Pick.PerLevel]
-			sort.SliceStable(charts, func(i, j int) bool { return charts[i].Position < charts[j].Position })
-		}
-		finalCharts = append(finalCharts, charts...)
-		finalLevelOrder = append(finalLevelOrder, level)
+		finalCharts = append(finalCharts, picked...)
+		finalLevelOrder = append(finalLevelOrder, lv.Name)
 	}
 
-	r := domain.PickResult{
+	return domain.PickResult{
 		PublishedTableID: pub.ID,
 		GeneratedAt:      u.clock.Now(),
 		SeedKey:          seedKey,
 		Charts:           finalCharts,
 		LevelOrder:       finalLevelOrder,
+	}, nil
+}
+
+// pickLevel は 1 公開レベル分のフェーズ 1 + フェーズ 2 を実行する。
+// ソース譜面の LoadCharts はソース表 ID ごとに 1 度だけ呼ぶ（マッピング数が多い場合の重複呼び出し回避）。
+// dedup の主キーは MD5、空なら SHA256 をフォールバック。
+// 出力する EnrichedChart の Level は公開レベル名 (lv.Name) で上書きする。
+func (u *PickUseCase) pickLevel(
+	ctx context.Context, pub domain.PublishedTable, lv domain.PublishedTableLevel,
+	rng *rand.Rand, now time.Time,
+) ([]domain.EnrichedChart, error) {
+	// ソース表 ID → EnrichedChart[] のキャッシュ。同じ source_table_id を複数マッピングが参照しても LoadCharts は 1 回。
+	sources := map[string][]domain.EnrichedChart{}
+	for _, mp := range lv.Mappings {
+		if _, ok := sources[mp.SourceTableID]; ok {
+			continue
+		}
+		src, err := u.srcRepo.Get(ctx, mp.SourceTableID)
+		if err != nil {
+			return nil, fmt.Errorf("get source table %q: %w", mp.SourceTableID, err)
+		}
+		if src.LastFetchStatus == domain.FetchStatusNever {
+			return nil, ErrSourceNotFetched
+		}
+		cs, err := u.srcRepo.LoadCharts(ctx, mp.SourceTableID, port.ChartQuery{OwnedOnly: pub.OwnedOnly})
+		if err != nil {
+			return nil, fmt.Errorf("load charts %q: %w", mp.SourceTableID, err)
+		}
+		sources[mp.SourceTableID] = cs
 	}
-	return r, nil
+
+	// 各マッピングの局所プール（source level でフィルタ）
+	pools := make([][]domain.EnrichedChart, len(lv.Mappings))
+	for i, mp := range lv.Mappings {
+		pools[i] = filterByLevel(sources[mp.SourceTableID], mp.SourceLevel)
+	}
+
+	// dedup キー（MD5 主、空なら SHA256）
+	keyOf := func(c domain.EnrichedChart) string {
+		if c.MD5 != "" {
+			return "md5:" + c.MD5
+		}
+		return "sha:" + c.SHA256
+	}
+
+	// unionPool: SortOrder 昇順（= mappings 順）で走査し、重複は最初に出会ったマッピング側のみ採用する。
+	// フェーズ 2 で「フェーズ 1 で取り切れなかった残りプール」として使う。
+	seenUnion := map[string]struct{}{}
+	var unionPool []domain.EnrichedChart
+	for _, p := range pools {
+		for _, c := range p {
+			k := keyOf(c)
+			if _, ok := seenUnion[k]; ok {
+				continue
+			}
+			seenUnion[k] = struct{}{}
+			unionPool = append(unionPool, c)
+		}
+	}
+
+	// フェーズ 1: 各マッピングから m 曲。既選曲は除外。
+	var picked []domain.EnrichedChart
+	pickedKeys := map[string]struct{}{}
+	m := lv.PerMappingPick
+	for i := range pools {
+		avail := make([]domain.EnrichedChart, 0, len(pools[i]))
+		for _, c := range pools[i] {
+			if _, ok := pickedKeys[keyOf(c)]; ok {
+				continue
+			}
+			avail = append(avail, c)
+		}
+		sort.SliceStable(avail, func(a, b int) bool { return avail[a].Position < avail[b].Position })
+		taken := weightedSampleWithoutReplacement(ctx, avail, m, u.weighter, rng, now)
+		for _, c := range taken {
+			pickedKeys[keyOf(c)] = struct{}{}
+		}
+		picked = append(picked, taken...)
+	}
+
+	// フェーズ 2: 合計 n 曲を目標に、unionPool 残りから補填。
+	// sum(m) > n の場合は need <= 0 となりスキップ（フェーズ 1 で既に超過分を取得している）。
+	need := lv.TotalPick - len(picked)
+	if need > 0 {
+		remaining := make([]domain.EnrichedChart, 0, len(unionPool))
+		for _, c := range unionPool {
+			if _, ok := pickedKeys[keyOf(c)]; ok {
+				continue
+			}
+			remaining = append(remaining, c)
+		}
+		sort.SliceStable(remaining, func(a, b int) bool { return remaining[a].Position < remaining[b].Position })
+		taken := weightedSampleWithoutReplacement(ctx, remaining, need, u.weighter, rng, now)
+		for _, c := range taken {
+			pickedKeys[keyOf(c)] = struct{}{}
+		}
+		picked = append(picked, taken...)
+	}
+
+	// 出力前: HTTP / data.json で公開レベル名を見せるため、各 chart の Level を lv.Name で上書き。
+	out := make([]domain.EnrichedChart, 0, len(picked))
+	for _, c := range picked {
+		cc := c
+		cc.Level = lv.Name
+		out = append(out, cc)
+	}
+	sort.SliceStable(out, func(a, b int) bool { return out[a].Position < out[b].Position })
+	return out, nil
+}
+
+// filterByLevel は EnrichedChart 列を SourceChart.Level 一致でフィルタする。
+func filterByLevel(charts []domain.EnrichedChart, level string) []domain.EnrichedChart {
+	out := make([]domain.EnrichedChart, 0, len(charts))
+	for _, c := range charts {
+		if c.Level == level {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// weightedSampleWithoutReplacement は重み付き非復元サンプリング（k 件まで）。
+// 重み 0 以下の譜面は対象外。pool が k 件未満なら採れた件数だけ返す。
+// 累積重み + 線形走査による「ロト方式」を採用（pool 規模が高々数百〜数千なので O(k * |pool|) で十分）。
+func weightedSampleWithoutReplacement(
+	ctx context.Context, pool []domain.EnrichedChart, k int,
+	w port.Weighter, rng *rand.Rand, now time.Time,
+) []domain.EnrichedChart {
+	if k <= 0 || len(pool) == 0 {
+		return nil
+	}
+	weights := make([]float64, len(pool))
+	totalWeight := 0.0
+	for i, c := range pool {
+		wt := w.Weight(ctx, c, now)
+		if wt <= 0 {
+			weights[i] = 0
+			continue
+		}
+		weights[i] = wt
+		totalWeight += wt
+	}
+	taken := make([]domain.EnrichedChart, 0, k)
+	used := make([]bool, len(pool))
+	for len(taken) < k && totalWeight > 0 {
+		r := rng.Float64() * totalWeight
+		cum := 0.0
+		picked := -1
+		for i, wt := range weights {
+			if used[i] || wt <= 0 {
+				continue
+			}
+			cum += wt
+			if r <= cum {
+				picked = i
+				break
+			}
+		}
+		if picked < 0 {
+			break
+		}
+		taken = append(taken, pool[picked])
+		totalWeight -= weights[picked]
+		used[picked] = true
+	}
+	return taken
 }
 
 // makeSeed はモード別のシードと SeedKey を返す。
@@ -187,66 +329,4 @@ func fnv32(s string) uint32 {
 	h := fnv.New32a()
 	_, _ = h.Write([]byte(s))
 	return h.Sum32()
-}
-
-// buildLevelOrder は決定論的なレベル並び順を返す。
-// srcOrder（ソース難易度表が宣言した並び）を最優先し、そこに含まれない実在レベルを
-// 自然順で末尾に並べる。srcOrder が空の場合は全レベルを自然順で並べる。
-// シャッフルループより前にこの順序を確定することで、
-// rng 消費順が Go map の反復順ランダム化に左右されないようにする。
-func buildLevelOrder(srcOrder []string, byLevel map[string][]domain.EnrichedChart) []string {
-	if len(srcOrder) == 0 {
-		order := make([]string, 0, len(byLevel))
-		for k := range byLevel {
-			order = append(order, k)
-		}
-		sortLevelsNatural(order)
-		return order
-	}
-	known := make(map[string]struct{}, len(srcOrder))
-	for _, l := range srcOrder {
-		known[l] = struct{}{}
-	}
-	extra := make([]string, 0, len(byLevel))
-	for k := range byLevel {
-		if _, ok := known[k]; !ok {
-			extra = append(extra, k)
-		}
-	}
-	sortLevelsNatural(extra)
-	order := make([]string, 0, len(srcOrder)+len(extra))
-	order = append(order, srcOrder...)
-	order = append(order, extra...)
-	return order
-}
-
-// sortLevelsNatural は BMS 難易度表のレベル列を自然順に並べる。
-// 数値として解釈できるレベル（"0", "12", "1.5" 等）を数値昇順で先に置き、
-// 解釈不能な文字列（"段位1", "?" 等）を文字列昇順で末尾に置く。
-// 同じ数値（"1" と "1.0" 等）は文字列で安定整列。
-// bms-elsa の `ORDER BY CAST(level AS INTEGER) = 0 AND level != '0', CAST(level AS INTEGER), level`
-// と同じ意図で、SQLite CAST AS INTEGER の代わりに float64 解釈を使う。
-func sortLevelsNatural(levels []string) {
-	sort.SliceStable(levels, func(i, j int) bool {
-		ai, aok := parseLevelNumeric(levels[i])
-		bj, bok := parseLevelNumeric(levels[j])
-		if aok != bok {
-			return aok // 数値解釈できる方が先
-		}
-		if aok {
-			if ai != bj {
-				return ai < bj
-			}
-		}
-		return levels[i] < levels[j]
-	})
-}
-
-// parseLevelNumeric は level 文字列を float64 として解釈する。失敗時は (0, false)。
-func parseLevelNumeric(s string) (float64, bool) {
-	f, err := strconv.ParseFloat(s, 64)
-	if err != nil {
-		return 0, false
-	}
-	return f, true
 }

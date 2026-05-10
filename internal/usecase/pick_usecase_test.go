@@ -3,13 +3,13 @@ package usecase_test
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"log/slog"
-	"strconv"
+	"sort"
 	"testing"
 	"time"
 
+	"github.com/meta-BE/bms-random-table-compositor/internal/adapter/weighter"
 	"github.com/meta-BE/bms-random-table-compositor/internal/domain"
 	"github.com/meta-BE/bms-random-table-compositor/internal/port"
 	"github.com/meta-BE/bms-random-table-compositor/internal/usecase"
@@ -50,13 +50,19 @@ type mutableClock struct{ t time.Time }
 func (c *mutableClock) Now() time.Time { return c.t }
 
 func newPickUCFixture(t *testing.T) *pickUCFixture {
+	return newPickUCFixtureWithWeighter(t, weighter.UniformWeighter{})
+}
+
+// newPickUCFixtureWithWeighter は任意の Weighter を注入できる fixture コンストラクタ。
+// TestPickUseCase_WeighterFiltersZeroWeights など、特定の譜面の重みを 0 にしたいテスト用。
+func newPickUCFixtureWithWeighter(t *testing.T, w port.Weighter) *pickUCFixture {
 	t.Helper()
 	pub := newFakePublishedRepo()
 	src := newFakeSourceRepo()
 	clock := &mutableClock{t: time.Date(2026, 5, 7, 12, 0, 0, 0, time.Local)}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	store := usecase.NewPickResultStore()
-	uc := usecase.NewPickUseCase(pub, src, store, clock, newStubFactory(), logger)
+	uc := usecase.NewPickUseCase(pub, src, store, clock, newStubFactory(), logger, w)
 	return &pickUCFixture{uc: uc, pubRepo: pub, srcRepo: src, store: store, clock: clock}
 }
 
@@ -73,15 +79,72 @@ func (f *pickUCFixture) seedSource(t *testing.T, id string, levelOrder []string,
 	f.srcRepo.charts[id] = charts
 }
 
-func (f *pickUCFixture) seedPub(t *testing.T, id, slug, sourceID string, ownedOnly bool, perLevel int, mode domain.RefreshMode) {
+// mappingSpec は seedPubWithLevels に渡す 1 マッピングの仕様。
+type mappingSpec struct {
+	srcID, level string
+}
+
+// levelSpec は seedPubWithLevels に渡す 1 公開レベル分の仕様。
+type levelSpec struct {
+	name     string
+	m, n     int
+	mappings []mappingSpec
+}
+
+// seedPubWithLevels は新仕様の Levels/Mappings を組み立てて pubRepo.Create する。
+func (f *pickUCFixture) seedPubWithLevels(
+	t *testing.T, id, slug string, ownedOnly bool, mode domain.RefreshMode, specs []levelSpec,
+) {
 	t.Helper()
+	levels := make([]domain.PublishedTableLevel, 0, len(specs))
+	for i, s := range specs {
+		mappings := make([]domain.PublishedTableLevelMapping, 0, len(s.mappings))
+		for j, mp := range s.mappings {
+			mappings = append(mappings, domain.PublishedTableLevelMapping{
+				ID:                    "MAP-" + id + "-" + s.name + "-" + mp.srcID + "-" + mp.level,
+				PublishedTableLevelID: "LV-" + id + "-" + s.name,
+				SourceTableID:         mp.srcID,
+				SourceLevel:           mp.level,
+				SortOrder:             j,
+			})
+		}
+		levels = append(levels, domain.PublishedTableLevel{
+			ID:               "LV-" + id + "-" + s.name,
+			PublishedTableID: id,
+			Name:             s.name,
+			SortOrder:        i,
+			PerMappingPick:   s.m,
+			TotalPick:        s.n,
+			Mappings:         mappings,
+		})
+	}
 	_, err := f.pubRepo.Create(context.Background(), domain.PublishedTable{
 		ID: id, Slug: slug, DisplayName: slug,
-		SourceTableID: sourceID, OwnedOnly: ownedOnly,
-		Pick: domain.PickConfig{PerLevel: perLevel, RefreshMode: mode},
+		OwnedOnly: ownedOnly,
+		Pick:      domain.PickConfig{RefreshMode: mode},
+		Levels:    levels,
 	})
 	require.NoError(t, err)
 }
+
+// zeroWeightWeighter は特定 MD5 の譜面の重みを 0 にする Weighter。
+// TestPickUseCase_WeighterFiltersZeroWeights 用。
+type zeroWeightWeighter struct {
+	zeroMD5 string
+}
+
+func (z zeroWeightWeighter) Weight(_ context.Context, c domain.EnrichedChart, _ time.Time) float64 {
+	if c.MD5 == z.zeroMD5 {
+		return 0
+	}
+	return 1
+}
+
+func zeroWeightFor(md5 string) port.Weighter {
+	return zeroWeightWeighter{zeroMD5: md5}
+}
+
+// ---- 既存仕様から保持する基本テスト ----
 
 func TestPickUseCase_NotFound(t *testing.T) {
 	f := newPickUCFixture(t)
@@ -92,85 +155,12 @@ func TestPickUseCase_NotFound(t *testing.T) {
 func TestPickUseCase_SourceNotFetchedReturnsError(t *testing.T) {
 	f := newPickUCFixture(t)
 	f.seedSource(t, "SRC1", []string{"0"}, domain.FetchStatusNever, nil)
-	f.seedPub(t, "PUB1", "p1", "SRC1", false, 0, domain.RefreshModePerRequest)
+	f.seedPubWithLevels(t, "PUB1", "p1", false, domain.RefreshModePerRequest, []levelSpec{
+		{name: "5", m: 1, n: 1, mappings: []mappingSpec{{srcID: "SRC1", level: "5"}}},
+	})
 
 	_, _, err := f.uc.PickBySlug(context.Background(), "p1")
 	require.True(t, errors.Is(err, usecase.ErrSourceNotFetched))
-}
-
-func TestPickUseCase_PerLevelZeroReturnsAll(t *testing.T) {
-	f := newPickUCFixture(t)
-	f.seedSource(t, "SRC1", []string{"0", "1"}, domain.FetchStatusOK, []domain.SourceChart{
-		chartFixture("SRC1", "0", 0, "aaa"),
-		chartFixture("SRC1", "0", 1, "bbb"),
-		chartFixture("SRC1", "1", 2, "ccc"),
-	})
-	f.seedPub(t, "PUB1", "p1", "SRC1", false, 0, domain.RefreshModePerRequest)
-
-	r, _, err := f.uc.PickBySlug(context.Background(), "p1")
-	require.NoError(t, err)
-	require.Len(t, r.Charts, 3)
-	require.Equal(t, []string{"0", "1"}, r.LevelOrder)
-}
-
-func TestPickUseCase_PerLevelLimitsResults(t *testing.T) {
-	f := newPickUCFixture(t)
-	charts := []domain.SourceChart{}
-	for i := 0; i < 5; i++ {
-		charts = append(charts, chartFixture("SRC1", "0", i, "L0-"+string(rune('a'+i))))
-	}
-	for i := 0; i < 2; i++ {
-		charts = append(charts, chartFixture("SRC1", "1", 10+i, "L1-"+string(rune('a'+i))))
-	}
-	f.seedSource(t, "SRC1", []string{"0", "1"}, domain.FetchStatusOK, charts)
-	f.seedPub(t, "PUB1", "p1", "SRC1", false, 3, domain.RefreshModePerRequest)
-
-	r, _, err := f.uc.PickBySlug(context.Background(), "p1")
-	require.NoError(t, err)
-	level0 := 0
-	level1 := 0
-	for _, c := range r.Charts {
-		switch c.Level {
-		case "0":
-			level0++
-		case "1":
-			level1++
-		}
-	}
-	require.Equal(t, 3, level0)
-	require.Equal(t, 2, level1)
-}
-
-func TestPickUseCase_OwnedOnlyFiltersBeforePick(t *testing.T) {
-	f := newPickUCFixture(t)
-	f.seedSource(t, "SRC1", []string{"0"}, domain.FetchStatusOK, []domain.SourceChart{
-		chartFixture("SRC1", "0", 0, "owned-1"),
-		chartFixture("SRC1", "0", 1, "not-owned"),
-		chartFixture("SRC1", "0", 2, "owned-2"),
-	})
-	f.seedPub(t, "PUB1", "p1", "SRC1", true, 0, domain.RefreshModePerRequest)
-	f.srcRepo.markOwned("owned-1", "owned-2")
-
-	r, _, err := f.uc.PickBySlug(context.Background(), "p1")
-	require.NoError(t, err)
-	require.Len(t, r.Charts, 2)
-	for _, c := range r.Charts {
-		require.NotEqual(t, "not-owned", c.MD5)
-	}
-}
-
-func TestPickUseCase_OwnedOnly_NoOwnedReturnsEmpty(t *testing.T) {
-	f := newPickUCFixture(t)
-	f.seedSource(t, "SRC1", []string{"0"}, domain.FetchStatusOK, []domain.SourceChart{
-		chartFixture("SRC1", "0", 0, "x"),
-	})
-	f.seedPub(t, "PUB1", "p1", "SRC1", true, 0, domain.RefreshModePerRequest)
-	// markOwned は呼ばない → owned セットが空なので 0 件が返る
-
-	r, _, err := f.uc.PickBySlug(context.Background(), "p1")
-	require.NoError(t, err)
-	require.Empty(t, r.Charts)
-	require.Empty(t, r.LevelOrder, "1 曲以上残ったレベルが無いので level_order は空")
 }
 
 func TestPickUseCase_DailyMode_SameDayCached(t *testing.T) {
@@ -180,7 +170,9 @@ func TestPickUseCase_DailyMode_SameDayCached(t *testing.T) {
 		chartFixture("SRC1", "0", 1, "b"),
 		chartFixture("SRC1", "0", 2, "c"),
 	})
-	f.seedPub(t, "PUB1", "p1", "SRC1", false, 2, domain.RefreshModeDaily)
+	f.seedPubWithLevels(t, "PUB1", "p1", false, domain.RefreshModeDaily, []levelSpec{
+		{name: "0", m: 2, n: 2, mappings: []mappingSpec{{srcID: "SRC1", level: "0"}}},
+	})
 
 	first, _, err := f.uc.PickBySlug(context.Background(), "p1")
 	require.NoError(t, err)
@@ -203,7 +195,9 @@ func TestPickUseCase_ManualMode_KeepsCacheUntilManualRefresh(t *testing.T) {
 		chartFixture("SRC1", "0", 0, "a"),
 		chartFixture("SRC1", "0", 1, "b"),
 	})
-	f.seedPub(t, "PUB1", "p1", "SRC1", false, 1, domain.RefreshModeManual)
+	f.seedPubWithLevels(t, "PUB1", "p1", false, domain.RefreshModeManual, []levelSpec{
+		{name: "0", m: 1, n: 1, mappings: []mappingSpec{{srcID: "SRC1", level: "0"}}},
+	})
 
 	first, _, err := f.uc.PickBySlug(context.Background(), "p1")
 	require.NoError(t, err)
@@ -224,7 +218,9 @@ func TestPickUseCase_PerRequestMode_RegeneratesEachCall(t *testing.T) {
 		chartFixture("SRC1", "0", 0, "a"),
 		chartFixture("SRC1", "0", 1, "b"),
 	})
-	f.seedPub(t, "PUB1", "p1", "SRC1", false, 1, domain.RefreshModePerRequest)
+	f.seedPubWithLevels(t, "PUB1", "p1", false, domain.RefreshModePerRequest, []levelSpec{
+		{name: "0", m: 1, n: 1, mappings: []mappingSpec{{srcID: "SRC1", level: "0"}}},
+	})
 
 	first, _, err := f.uc.PickBySlug(context.Background(), "p1")
 	require.NoError(t, err)
@@ -232,55 +228,6 @@ func TestPickUseCase_PerRequestMode_RegeneratesEachCall(t *testing.T) {
 	second, _, err := f.uc.PickBySlug(context.Background(), "p1")
 	require.NoError(t, err)
 	require.NotEqual(t, first.SeedKey, second.SeedKey)
-}
-
-func TestPickUseCase_LevelOrderRespected(t *testing.T) {
-	f := newPickUCFixture(t)
-	f.seedSource(t, "SRC1", []string{"sl0", "sl1", "sl2"}, domain.FetchStatusOK, []domain.SourceChart{
-		chartFixture("SRC1", "sl2", 0, "c1"),
-		chartFixture("SRC1", "sl0", 1, "a1"),
-		chartFixture("SRC1", "sl1", 2, "b1"),
-	})
-	f.seedPub(t, "PUB1", "p1", "SRC1", false, 0, domain.RefreshModePerRequest)
-
-	r, _, err := f.uc.PickBySlug(context.Background(), "p1")
-	require.NoError(t, err)
-	require.Equal(t, []string{"sl0", "sl1", "sl2"}, r.LevelOrder)
-	require.Equal(t, "sl0", r.Charts[0].Level)
-	require.Equal(t, "sl1", r.Charts[1].Level)
-	require.Equal(t, "sl2", r.Charts[2].Level)
-}
-
-func TestPickUseCase_LevelOrder_FallbackWhenSourceHasNone(t *testing.T) {
-	f := newPickUCFixture(t)
-	// 数値レベルのみ → 文字列ソートでは ["1","10","2"] になるが、自然順では数値昇順 ["1","2","10"]
-	f.seedSource(t, "SRC1", nil, domain.FetchStatusOK, []domain.SourceChart{
-		chartFixture("SRC1", "10", 0, "x"),
-		chartFixture("SRC1", "1", 1, "y"),
-		chartFixture("SRC1", "2", 2, "z"),
-	})
-	f.seedPub(t, "PUB1", "p1", "SRC1", false, 0, domain.RefreshModePerRequest)
-
-	r, _, err := f.uc.PickBySlug(context.Background(), "p1")
-	require.NoError(t, err)
-	require.Equal(t, []string{"1", "2", "10"}, r.LevelOrder)
-}
-
-// 数値解釈できないレベル（"段位1" 等）を含む場合、数値が先で文字列が末尾になる。
-func TestPickUseCase_LevelOrder_FallbackMixedNumericAndString(t *testing.T) {
-	f := newPickUCFixture(t)
-	f.seedSource(t, "SRC1", nil, domain.FetchStatusOK, []domain.SourceChart{
-		chartFixture("SRC1", "段位2", 0, "a"),
-		chartFixture("SRC1", "10", 1, "b"),
-		chartFixture("SRC1", "段位1", 2, "c"),
-		chartFixture("SRC1", "2", 3, "d"),
-	})
-	f.seedPub(t, "PUB1", "p1", "SRC1", false, 0, domain.RefreshModePerRequest)
-
-	r, _, err := f.uc.PickBySlug(context.Background(), "p1")
-	require.NoError(t, err)
-	// 数値レベルが昇順で先、文字列レベルが昇順で末尾
-	require.Equal(t, []string{"2", "10", "段位1", "段位2"}, r.LevelOrder)
 }
 
 func TestPickUseCase_DeterministicWithSameSeed(t *testing.T) {
@@ -292,7 +239,9 @@ func TestPickUseCase_DeterministicWithSameSeed(t *testing.T) {
 			chartFixture("SRC1", "0", 2, "c"),
 			chartFixture("SRC1", "0", 3, "d"),
 		})
-		f.seedPub(t, "PUB1", "p1", "SRC1", false, 2, domain.RefreshModeDaily)
+		f.seedPubWithLevels(t, "PUB1", "p1", false, domain.RefreshModeDaily, []levelSpec{
+			{name: "0", m: 2, n: 2, mappings: []mappingSpec{{srcID: "SRC1", level: "0"}}},
+		})
 		return f
 	}
 	a := build()
@@ -307,11 +256,9 @@ func TestPickUseCase_DeterministicWithSameSeed(t *testing.T) {
 	}
 }
 
-// TestPickUseCase_DeterministicAcrossRestarts は、同一シードのもとで
-// regenerate を何度走らせても結果が完全一致することを保証する。
-// 複数レベル + PerLevel 制限の条件下で、シャッフルループが Go の map 反復
-// ランダム化に依存していると、レベルごとに割り当たる乱数列がブレて
-// 同一日でも結果が変わる（再起動で変わって見える）。複数回ループで検出する。
+// TestPickUseCase_DeterministicAcrossRestarts は複数公開レベル + 複数マッピング条件下でも
+// 同一シードで結果が完全一致することを保証する。各レベルのシードを baseSeed XOR fnv32(level.ID)
+// で独立させているので、Go map の反復順揺らぎが結果に影響しないはず。
 func TestPickUseCase_DeterministicAcrossRestarts(t *testing.T) {
 	build := func() *pickUCFixture {
 		f := newPickUCFixture(t)
@@ -321,20 +268,25 @@ func TestPickUseCase_DeterministicAcrossRestarts(t *testing.T) {
 		for _, lv := range levels {
 			for i := 0; i < 5; i++ {
 				charts = append(charts, chartFixture("SRC1", lv, pos,
-					fmt.Sprintf("L%s-%d", lv, i)))
+					"L"+lv+"-"+string(rune('a'+i))))
 				pos++
 			}
 		}
 		f.seedSource(t, "SRC1", levels, domain.FetchStatusOK, charts)
-		f.seedPub(t, "PUB1", "p1", "SRC1", false, 2, domain.RefreshModeDaily)
+		specs := make([]levelSpec, 0, len(levels))
+		for _, lv := range levels {
+			specs = append(specs, levelSpec{
+				name: lv, m: 2, n: 2,
+				mappings: []mappingSpec{{srcID: "SRC1", level: lv}},
+			})
+		}
+		f.seedPubWithLevels(t, "PUB1", "p1", false, domain.RefreshModeDaily, specs)
 		return f
 	}
 
 	expected, _, err := build().uc.PickBySlug(context.Background(), "p1")
 	require.NoError(t, err)
 
-	// 複数回新しい fixture（新しい store / 新しい map）で生成して
-	// map 反復順がブレても結果が一致することを確認する。
 	for i := 0; i < 50; i++ {
 		got, _, err := build().uc.PickBySlug(context.Background(), "p1")
 		require.NoError(t, err)
@@ -347,46 +299,14 @@ func TestPickUseCase_DeterministicAcrossRestarts(t *testing.T) {
 	}
 }
 
-// TestPickUseCase_DeterministicAcrossRestarts_NoSrcLevelOrder は、
-// ソース表が level_order を提供しない場合（自然順フォールバック）でも
-// 同一シードなら結果が一致することを保証する。
-func TestPickUseCase_DeterministicAcrossRestarts_NoSrcLevelOrder(t *testing.T) {
-	build := func() *pickUCFixture {
-		f := newPickUCFixture(t)
-		var charts []domain.SourceChart
-		pos := 0
-		for lv := 0; lv < 6; lv++ {
-			for i := 0; i < 4; i++ {
-				charts = append(charts, chartFixture("SRC1", strconv.Itoa(lv), pos,
-					fmt.Sprintf("L%d-%d", lv, i)))
-				pos++
-			}
-		}
-		// level_order を空にしてフォールバック経路を通す
-		f.seedSource(t, "SRC1", nil, domain.FetchStatusOK, charts)
-		f.seedPub(t, "PUB1", "p1", "SRC1", false, 2, domain.RefreshModeDaily)
-		return f
-	}
-
-	expected, _, err := build().uc.PickBySlug(context.Background(), "p1")
-	require.NoError(t, err)
-
-	for i := 0; i < 50; i++ {
-		got, _, err := build().uc.PickBySlug(context.Background(), "p1")
-		require.NoError(t, err)
-		for j := range expected.Charts {
-			require.Equal(t, expected.Charts[j].MD5, got.Charts[j].MD5,
-				"iteration %d, position %d", i, j)
-		}
-	}
-}
-
 func TestPickUseCase_InvalidateAll_ClearsStore(t *testing.T) {
 	f := newPickUCFixture(t)
 	f.seedSource(t, "SRC1", []string{"0"}, domain.FetchStatusOK, []domain.SourceChart{
 		chartFixture("SRC1", "0", 0, "a"),
 	})
-	f.seedPub(t, "PUB1", "p1", "SRC1", false, 0, domain.RefreshModeManual)
+	f.seedPubWithLevels(t, "PUB1", "p1", false, domain.RefreshModeManual, []levelSpec{
+		{name: "0", m: 1, n: 1, mappings: []mappingSpec{{srcID: "SRC1", level: "0"}}},
+	})
 
 	_, _, err := f.uc.PickBySlug(context.Background(), "p1")
 	require.NoError(t, err)
@@ -394,4 +314,247 @@ func TestPickUseCase_InvalidateAll_ClearsStore(t *testing.T) {
 
 	f.uc.InvalidateAll()
 	require.Empty(t, f.store.Snapshot())
+}
+
+// ---- 新仕様（フェーズ 1+2）固有のテスト ----
+
+// フェーズ 1 のみ: m=1, n=0, 2 マッピング → 各 1 曲、合計 2 曲。フェーズ 2 はスキップ。
+func TestPickUseCase_PhaseOneOnly_NEqualsZero(t *testing.T) {
+	f := newPickUCFixture(t)
+	f.seedSource(t, "SRC1", []string{"5"}, domain.FetchStatusOK, []domain.SourceChart{
+		chartFixture("SRC1", "5", 0, "a1"),
+		chartFixture("SRC1", "5", 1, "a2"),
+	})
+	f.seedSource(t, "SRC2", []string{"5"}, domain.FetchStatusOK, []domain.SourceChart{
+		chartFixture("SRC2", "5", 0, "b1"),
+		chartFixture("SRC2", "5", 1, "b2"),
+	})
+	f.seedPubWithLevels(t, "PUB1", "p1", false, domain.RefreshModePerRequest, []levelSpec{
+		{name: "5", m: 1, n: 0, mappings: []mappingSpec{
+			{srcID: "SRC1", level: "5"},
+			{srcID: "SRC2", level: "5"},
+		}},
+	})
+
+	r, _, err := f.uc.PickBySlug(context.Background(), "p1")
+	require.NoError(t, err)
+	require.Len(t, r.Charts, 2, "m=1 * 2 mappings = 2 曲。フェーズ 2 はスキップ")
+	require.Equal(t, []string{"5"}, r.LevelOrder)
+}
+
+// フェーズ 2 が合計 n に達するまで補填する: m=1, n=4, 2 マッピング → フェーズ 1 で 2、フェーズ 2 で +2 → 合計 4。
+func TestPickUseCase_PhaseTwoFillsToTotalN(t *testing.T) {
+	f := newPickUCFixture(t)
+	f.seedSource(t, "SRC1", []string{"5"}, domain.FetchStatusOK, []domain.SourceChart{
+		chartFixture("SRC1", "5", 0, "a1"),
+		chartFixture("SRC1", "5", 1, "a2"),
+		chartFixture("SRC1", "5", 2, "a3"),
+	})
+	f.seedSource(t, "SRC2", []string{"5"}, domain.FetchStatusOK, []domain.SourceChart{
+		chartFixture("SRC2", "5", 0, "b1"),
+		chartFixture("SRC2", "5", 1, "b2"),
+		chartFixture("SRC2", "5", 2, "b3"),
+	})
+	f.seedPubWithLevels(t, "PUB1", "p1", false, domain.RefreshModePerRequest, []levelSpec{
+		{name: "5", m: 1, n: 4, mappings: []mappingSpec{
+			{srcID: "SRC1", level: "5"},
+			{srcID: "SRC2", level: "5"},
+		}},
+	})
+
+	r, _, err := f.uc.PickBySlug(context.Background(), "p1")
+	require.NoError(t, err)
+	require.Len(t, r.Charts, 4, "フェーズ 1 で 2、フェーズ 2 で +2 → 合計 4")
+}
+
+// sum(m) > n の場合はフェーズ 2 をスキップ: m=3, n=4, 2 マッピング → フェーズ 1 で 6（n 超過）。
+func TestPickUseCase_SumOfMExceedsN_PhaseTwoSkipped(t *testing.T) {
+	f := newPickUCFixture(t)
+	f.seedSource(t, "SRC1", []string{"5"}, domain.FetchStatusOK, []domain.SourceChart{
+		chartFixture("SRC1", "5", 0, "a1"),
+		chartFixture("SRC1", "5", 1, "a2"),
+		chartFixture("SRC1", "5", 2, "a3"),
+		chartFixture("SRC1", "5", 3, "a4"),
+	})
+	f.seedSource(t, "SRC2", []string{"5"}, domain.FetchStatusOK, []domain.SourceChart{
+		chartFixture("SRC2", "5", 0, "b1"),
+		chartFixture("SRC2", "5", 1, "b2"),
+		chartFixture("SRC2", "5", 2, "b3"),
+		chartFixture("SRC2", "5", 3, "b4"),
+	})
+	f.seedPubWithLevels(t, "PUB1", "p1", false, domain.RefreshModePerRequest, []levelSpec{
+		{name: "5", m: 3, n: 4, mappings: []mappingSpec{
+			{srcID: "SRC1", level: "5"},
+			{srcID: "SRC2", level: "5"},
+		}},
+	})
+
+	r, _, err := f.uc.PickBySlug(context.Background(), "p1")
+	require.NoError(t, err)
+	require.Len(t, r.Charts, 6, "m=3 * 2 mappings = 6。n=4 を超えるためフェーズ 2 はスキップ")
+}
+
+// 同一 MD5 が複数マッピングに含まれる場合 dedup される: m=1, n=1, 2 マッピング、両方に MD5="X" のみ → 1 曲のみ。
+func TestPickUseCase_Dedup_SameMD5InMultipleMappings(t *testing.T) {
+	f := newPickUCFixture(t)
+	f.seedSource(t, "SRC1", []string{"5"}, domain.FetchStatusOK, []domain.SourceChart{
+		chartFixture("SRC1", "5", 0, "X"),
+	})
+	f.seedSource(t, "SRC2", []string{"5"}, domain.FetchStatusOK, []domain.SourceChart{
+		chartFixture("SRC2", "5", 0, "X"),
+	})
+	f.seedPubWithLevels(t, "PUB1", "p1", false, domain.RefreshModePerRequest, []levelSpec{
+		{name: "5", m: 1, n: 1, mappings: []mappingSpec{
+			{srcID: "SRC1", level: "5"},
+			{srcID: "SRC2", level: "5"},
+		}},
+	})
+
+	r, _, err := f.uc.PickBySlug(context.Background(), "p1")
+	require.NoError(t, err)
+	require.Len(t, r.Charts, 1, "MD5 が同じならフェーズ 1 の 2 マッピング目で dedup されて 1 曲のみ")
+	require.Equal(t, "X", r.Charts[0].MD5)
+}
+
+// 供給不足の場合は補填しない: m=2 だが pool に 1 曲のみ → 1 曲だけ返る。
+func TestPickUseCase_InsufficientSupply_NoCompensation(t *testing.T) {
+	f := newPickUCFixture(t)
+	f.seedSource(t, "SRC1", []string{"5"}, domain.FetchStatusOK, []domain.SourceChart{
+		chartFixture("SRC1", "5", 0, "only"),
+	})
+	f.seedPubWithLevels(t, "PUB1", "p1", false, domain.RefreshModePerRequest, []levelSpec{
+		{name: "5", m: 2, n: 0, mappings: []mappingSpec{
+			{srcID: "SRC1", level: "5"},
+		}},
+	})
+
+	r, _, err := f.uc.PickBySlug(context.Background(), "p1")
+	require.NoError(t, err)
+	require.Len(t, r.Charts, 1, "pool 1 曲しかないので m=2 でも 1 曲しか取れない")
+}
+
+// daily モードで同一日内なら同じ結果が返る（決定論性）。
+func TestPickUseCase_Deterministic_DailyMode(t *testing.T) {
+	f := newPickUCFixture(t)
+	f.seedSource(t, "SRC1", []string{"5"}, domain.FetchStatusOK, []domain.SourceChart{
+		chartFixture("SRC1", "5", 0, "a"),
+		chartFixture("SRC1", "5", 1, "b"),
+		chartFixture("SRC1", "5", 2, "c"),
+		chartFixture("SRC1", "5", 3, "d"),
+	})
+	f.seedPubWithLevels(t, "PUB1", "p1", false, domain.RefreshModeDaily, []levelSpec{
+		{name: "5", m: 2, n: 2, mappings: []mappingSpec{{srcID: "SRC1", level: "5"}}},
+	})
+
+	first, _, err := f.uc.PickBySlug(context.Background(), "p1")
+	require.NoError(t, err)
+	// 別の時刻（同じ日）でもう 1 度
+	f.clock.t = f.clock.t.Add(3 * time.Hour)
+	second, _, err := f.uc.PickBySlug(context.Background(), "p1")
+	require.NoError(t, err)
+	require.Equal(t, first.SeedKey, second.SeedKey)
+	require.Equal(t, len(first.Charts), len(second.Charts))
+	for i := range first.Charts {
+		require.Equal(t, first.Charts[i].MD5, second.Charts[i].MD5)
+	}
+}
+
+// Weighter で重み 0 を返した譜面はピック対象外になる。
+// pool に 2 曲（"keep", "skip"）、m=1, n=1 で skip の重みを 0 にすると必ず "keep" が返る。
+func TestPickUseCase_WeighterFiltersZeroWeights(t *testing.T) {
+	f := newPickUCFixtureWithWeighter(t, zeroWeightFor("skip"))
+	f.seedSource(t, "SRC1", []string{"5"}, domain.FetchStatusOK, []domain.SourceChart{
+		chartFixture("SRC1", "5", 0, "skip"),
+		chartFixture("SRC1", "5", 1, "keep"),
+	})
+	f.seedPubWithLevels(t, "PUB1", "p1", false, domain.RefreshModePerRequest, []levelSpec{
+		{name: "5", m: 1, n: 1, mappings: []mappingSpec{{srcID: "SRC1", level: "5"}}},
+	})
+
+	r, _, err := f.uc.PickBySlug(context.Background(), "p1")
+	require.NoError(t, err)
+	require.Len(t, r.Charts, 1)
+	require.Equal(t, "keep", r.Charts[0].MD5, "重み 0 の譜面は選ばれないはず")
+}
+
+// LevelOrder は pub.Levels の SortOrder 順（seedPubWithLevels の specs 配列順）で組まれる。
+func TestPickUseCase_LevelOrderRespectsLevels(t *testing.T) {
+	f := newPickUCFixture(t)
+	f.seedSource(t, "SRC1", []string{"a", "b", "c"}, domain.FetchStatusOK, []domain.SourceChart{
+		chartFixture("SRC1", "a", 0, "ma"),
+		chartFixture("SRC1", "b", 1, "mb"),
+		chartFixture("SRC1", "c", 2, "mc"),
+	})
+	// 公開レベル順を意図的に [c, a, b] と入れ替える
+	f.seedPubWithLevels(t, "PUB1", "p1", false, domain.RefreshModePerRequest, []levelSpec{
+		{name: "Lc", m: 1, n: 1, mappings: []mappingSpec{{srcID: "SRC1", level: "c"}}},
+		{name: "La", m: 1, n: 1, mappings: []mappingSpec{{srcID: "SRC1", level: "a"}}},
+		{name: "Lb", m: 1, n: 1, mappings: []mappingSpec{{srcID: "SRC1", level: "b"}}},
+	})
+
+	r, _, err := f.uc.PickBySlug(context.Background(), "p1")
+	require.NoError(t, err)
+	require.Equal(t, []string{"Lc", "La", "Lb"}, r.LevelOrder)
+}
+
+// 結果の chart.Level は公開レベル名 (lv.Name) で上書きされる。
+// HTTP 応答 / data.json で公開レベル名を見せるための仕様。
+func TestPickUseCase_LevelOverwrittenWithPublicLevelName(t *testing.T) {
+	f := newPickUCFixture(t)
+	f.seedSource(t, "SRC1", []string{"raw-level"}, domain.FetchStatusOK, []domain.SourceChart{
+		chartFixture("SRC1", "raw-level", 0, "x"),
+	})
+	f.seedPubWithLevels(t, "PUB1", "p1", false, domain.RefreshModePerRequest, []levelSpec{
+		{name: "公開LV5", m: 1, n: 1, mappings: []mappingSpec{{srcID: "SRC1", level: "raw-level"}}},
+	})
+
+	r, _, err := f.uc.PickBySlug(context.Background(), "p1")
+	require.NoError(t, err)
+	require.Len(t, r.Charts, 1)
+	require.Equal(t, "公開LV5", r.Charts[0].Level, "出力 chart の Level は公開レベル名で上書きされる")
+	require.Equal(t, []string{"公開LV5"}, r.LevelOrder)
+}
+
+// OwnedOnly: pool 構築時点で IsOwned=false の譜面が落ちる（既存仕様の継続）。
+func TestPickUseCase_OwnedOnlyFiltersBeforePick(t *testing.T) {
+	f := newPickUCFixture(t)
+	f.seedSource(t, "SRC1", []string{"5"}, domain.FetchStatusOK, []domain.SourceChart{
+		chartFixture("SRC1", "5", 0, "owned-1"),
+		chartFixture("SRC1", "5", 1, "not-owned"),
+		chartFixture("SRC1", "5", 2, "owned-2"),
+	})
+	f.seedPubWithLevels(t, "PUB1", "p1", true /* ownedOnly */, domain.RefreshModePerRequest, []levelSpec{
+		{name: "5", m: 0, n: 10, mappings: []mappingSpec{{srcID: "SRC1", level: "5"}}},
+	})
+	f.srcRepo.markOwned("owned-1", "owned-2")
+
+	r, _, err := f.uc.PickBySlug(context.Background(), "p1")
+	require.NoError(t, err)
+	require.Len(t, r.Charts, 2)
+	for _, c := range r.Charts {
+		require.NotEqual(t, "not-owned", c.MD5)
+	}
+}
+
+// 結果の Charts は最終的に Position 昇順で並ぶ（pickLevel の出力 stable sort 仕様）。
+func TestPickUseCase_OutputSortedByPositionWithinLevel(t *testing.T) {
+	f := newPickUCFixture(t)
+	// 意図的に position が降順に並んだ pool を仕込む
+	f.seedSource(t, "SRC1", []string{"5"}, domain.FetchStatusOK, []domain.SourceChart{
+		chartFixture("SRC1", "5", 30, "z"),
+		chartFixture("SRC1", "5", 10, "x"),
+		chartFixture("SRC1", "5", 20, "y"),
+	})
+	f.seedPubWithLevels(t, "PUB1", "p1", false, domain.RefreshModePerRequest, []levelSpec{
+		{name: "5", m: 0, n: 3, mappings: []mappingSpec{{srcID: "SRC1", level: "5"}}},
+	})
+
+	r, _, err := f.uc.PickBySlug(context.Background(), "p1")
+	require.NoError(t, err)
+	require.Len(t, r.Charts, 3)
+	positions := make([]int, len(r.Charts))
+	for i, c := range r.Charts {
+		positions[i] = c.Position
+	}
+	require.True(t, sort.IntsAreSorted(positions), "Position 昇順で並ぶはず: %v", positions)
 }
