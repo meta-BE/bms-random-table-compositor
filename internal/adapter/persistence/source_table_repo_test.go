@@ -290,3 +290,61 @@ func TestSourceTableRepoSQL_LoadCharts_EmptyForNoSource(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, out)
 }
+
+// header.json に level_order が無くても、charts から自然順で導出されること。
+// （ウィザード/マッピング編集 UI のレベル選択肢ゼロ問題への対策）
+func TestSourceTableRepoSQL_SaveFetched_DerivesLevelOrderFromCharts_WhenHeaderHasNoLevelOrder(t *testing.T) {
+	r := setupSourceTableRepo(t)
+	ctx := context.Background()
+	_, err := r.Create(ctx, domain.SourceTable{
+		ID: "src-derive", InputURL: "https://x", InputKind: domain.InputKindHTML,
+		LastFetchStatus: domain.FetchStatusNever,
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, r.SaveFetched(ctx, "src-derive", port.FetchedTable{
+		Header: domain.BMSTableHeader{
+			Name: "T", Symbol: "▽", DataURL: "data.json",
+			// LevelOrder: 意図的に省略（nil）
+		},
+		Charts: []domain.SourceChart{
+			{Position: 0, MD5: "a", Level: "10"},
+			{Position: 1, MD5: "b", Level: "段位1"},
+			{Position: 2, MD5: "c", Level: "1"},
+			{Position: 3, MD5: "d", Level: "2"},
+			{Position: 4, MD5: "e", Level: "10"}, // duplicate
+		},
+		ETag: "",
+	}, time.Now()))
+
+	got, err := r.Get(ctx, "src-derive")
+	require.NoError(t, err)
+	// 数値順 → 文字列。重複除去。
+	require.Equal(t, []string{"1", "2", "10", "段位1"}, got.LevelOrder)
+}
+
+// header に level_order がある場合は導出せずヘッダー値を尊重する。
+func TestSourceTableRepoSQL_SaveFetched_KeepsHeaderLevelOrder_WhenProvided(t *testing.T) {
+	r := setupSourceTableRepo(t)
+	ctx := context.Background()
+	_, err := r.Create(ctx, domain.SourceTable{
+		ID: "src-keep", InputURL: "https://y", InputKind: domain.InputKindHTML,
+		LastFetchStatus: domain.FetchStatusNever,
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, r.SaveFetched(ctx, "src-keep", port.FetchedTable{
+		Header: domain.BMSTableHeader{
+			Name: "T", DataURL: "data.json",
+			LevelOrder: []string{"a", "b"}, // 明示
+		},
+		Charts: []domain.SourceChart{
+			{Position: 0, MD5: "x", Level: "z"}, // header にないレベルだが charts に存在
+		},
+		ETag: "",
+	}, time.Now()))
+
+	got, err := r.Get(ctx, "src-keep")
+	require.NoError(t, err)
+	require.Equal(t, []string{"a", "b"}, got.LevelOrder)
+}

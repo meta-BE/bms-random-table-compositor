@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
+	"strconv"
 	"time"
 
 	"github.com/meta-BE/bms-random-table-compositor/internal/domain"
@@ -208,7 +210,14 @@ func (r *SourceTableRepoSQL) SaveFetched(
 		return tx.Commit()
 	}
 
-	levelOrderJSON, err := json.Marshal(ft.Header.LevelOrder)
+	// header.json に level_order が無いソース表（例: 一部の satellite/stella）に対しては、
+	// charts から自然順で導出した値で埋める。空のままだとウィザードや
+	// マッピング編集 UI が「レベル選択肢ゼロ」になり機能停止する (両バグの fix)。
+	levelOrder := ft.Header.LevelOrder
+	if len(levelOrder) == 0 {
+		levelOrder = deriveLevelOrderFromCharts(ft.Charts)
+	}
+	levelOrderJSON, err := json.Marshal(levelOrder)
 	if err != nil {
 		return fmt.Errorf("marshal level_order: %w", err)
 	}
@@ -345,6 +354,46 @@ func scanEnrichedRows(rows *sql.Rows, sourceID string) ([]domain.EnrichedChart, 
 		out = append(out, ec)
 	}
 	return out, rows.Err()
+}
+
+// deriveLevelOrderFromCharts は charts から distinct level を自然順で並べる。
+// 数値解釈できるレベル（"1", "2", "1.5" 等）を数値昇順で先に置き、
+// 数値解釈できない文字列（"段位1", "?" 等）を文字列昇順で末尾に置く。
+// header.json に level_order が無いソース表（例: 一部の satellite/stella）に対して、
+// LevelOrder を意味のある値で埋めるために SaveFetched から呼ばれる。
+func deriveLevelOrderFromCharts(charts []domain.SourceChart) []string {
+	seen := map[string]struct{}{}
+	var levels []string
+	for _, c := range charts {
+		if c.Level == "" {
+			continue
+		}
+		if _, ok := seen[c.Level]; ok {
+			continue
+		}
+		seen[c.Level] = struct{}{}
+		levels = append(levels, c.Level)
+	}
+	sort.SliceStable(levels, func(i, j int) bool {
+		ai, aok := parseLevelNumeric(levels[i])
+		bj, bok := parseLevelNumeric(levels[j])
+		if aok != bok {
+			return aok // 数値解釈できる方が先
+		}
+		if aok && ai != bj {
+			return ai < bj
+		}
+		return levels[i] < levels[j]
+	})
+	return levels
+}
+
+func parseLevelNumeric(s string) (float64, bool) {
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return 0, false
+	}
+	return f, true
 }
 
 // MarkFetchError は取得失敗を記録する。譜面行は触らない（前回成功時のキャッシュを保持）。
