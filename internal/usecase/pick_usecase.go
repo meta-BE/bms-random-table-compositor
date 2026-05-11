@@ -251,31 +251,20 @@ func (u *PickUseCase) pickLevel(
 		return float64(age) / float64(maxAgeSec)
 	}
 
-	type pickedItem struct {
-		chart      domain.EnrichedChart
-		mappingIdx int
-	}
 	var picked []pickedItem
 	pickedKeys := map[string]struct{}{}
 
 	if pickCfg.WeightMode == domain.WeightModeSort {
-		sortPicked := pickSortDeterministic(pools, unionPool, aOf, keyOf, chartOriginMapping, lv.PerMappingPick, lv.TotalPick)
-		for _, p := range sortPicked {
+		picked = pickSortDeterministic(pools, unionPool, aOf, keyOf, chartOriginMapping, lv.PerMappingPick, lv.TotalPick)
+		for _, p := range picked {
 			pickedKeys[keyOf(p.chart)] = struct{}{}
-			picked = append(picked, pickedItem{chart: p.chart, mappingIdx: p.mappingIdx})
 		}
 	} else {
 		w := u.weighterFactory.For(pickCfg)
 		// フェーズ 1: 各マッピングから m 曲。pools[i] は LoadCharts の position 昇順を保つ。
 		m := lv.PerMappingPick
 		for i := range pools {
-			avail := make([]domain.EnrichedChart, 0, len(pools[i]))
-			for _, c := range pools[i] {
-				if _, ok := pickedKeys[keyOf(c)]; ok {
-					continue
-				}
-				avail = append(avail, c)
-			}
+			avail := unpickedFrom(pools[i], pickedKeys, keyOf)
 			taken := weightedSampleWithoutReplacement(ctx, avail, m, w, aOf, rng)
 			for _, c := range taken {
 				pickedKeys[keyOf(c)] = struct{}{}
@@ -285,13 +274,7 @@ func (u *PickUseCase) pickLevel(
 		// フェーズ 2: sum(picked) < n なら unionPool 残りから補填。
 		need := lv.TotalPick - len(picked)
 		if need > 0 {
-			remaining := make([]domain.EnrichedChart, 0, len(unionPool))
-			for _, c := range unionPool {
-				if _, ok := pickedKeys[keyOf(c)]; ok {
-					continue
-				}
-				remaining = append(remaining, c)
-			}
+			remaining := unpickedFrom(unionPool, pickedKeys, keyOf)
 			taken := weightedSampleWithoutReplacement(ctx, remaining, need, w, aOf, rng)
 			for _, c := range taken {
 				k := keyOf(c)
@@ -316,10 +299,28 @@ func (u *PickUseCase) pickLevel(
 	return out, nil
 }
 
-// sortPickedItem は pickSortDeterministic が返す内部表現。
-type sortPickedItem struct {
+// pickedItem は pickLevel 内部および pickSortDeterministic が返すピック中間表現。
+// 出力整列の (mappingIdx 昇順, Position 昇順) ソートで使う。
+type pickedItem struct {
 	chart      domain.EnrichedChart
 	mappingIdx int
+}
+
+// unpickedFrom は src から pickedKeys にまだ無い要素だけを抜き出す。
+// pickLevel の phase1 (per-mapping) と phase2 (union 補填) で共通の前処理。
+func unpickedFrom(
+	src []domain.EnrichedChart,
+	pickedKeys map[string]struct{},
+	keyOf func(domain.EnrichedChart) string,
+) []domain.EnrichedChart {
+	out := make([]domain.EnrichedChart, 0, len(src))
+	for _, c := range src {
+		if _, ok := pickedKeys[keyOf(c)]; ok {
+			continue
+		}
+		out = append(out, c)
+	}
+	return out
 }
 
 // pickSortDeterministic は WeightMode=sort 経路のピックを行う。
@@ -333,8 +334,8 @@ func pickSortDeterministic(
 	keyOf func(domain.EnrichedChart) string,
 	chartOriginMapping map[string]int,
 	perMapping int, totalPick int,
-) []sortPickedItem {
-	var picked []sortPickedItem
+) []pickedItem {
+	var picked []pickedItem
 	pickedKeys := map[string]struct{}{}
 
 	// phase1: 各マッピング pool を a 降順ソートし上から m 件
@@ -358,7 +359,7 @@ func pickSortDeterministic(
 				continue
 			}
 			pickedKeys[k] = struct{}{}
-			picked = append(picked, sortPickedItem{chart: c, mappingIdx: i})
+			picked = append(picked, pickedItem{chart: c, mappingIdx: i})
 			taken++
 		}
 	}
@@ -366,13 +367,7 @@ func pickSortDeterministic(
 	// phase2: union 残りから (a 降順, mappingIdx 昇順, position 昇順) で補填
 	need := totalPick - len(picked)
 	if need > 0 {
-		remaining := make([]domain.EnrichedChart, 0, len(unionPool))
-		for _, c := range unionPool {
-			if _, ok := pickedKeys[keyOf(c)]; ok {
-				continue
-			}
-			remaining = append(remaining, c)
-		}
+		remaining := unpickedFrom(unionPool, pickedKeys, keyOf)
 		sort.SliceStable(remaining, func(x, y int) bool {
 			ax, ay := aOf(remaining[x]), aOf(remaining[y])
 			if ax != ay {
@@ -387,7 +382,7 @@ func pickSortDeterministic(
 		})
 		for i := 0; i < need && i < len(remaining); i++ {
 			c := remaining[i]
-			picked = append(picked, sortPickedItem{chart: c, mappingIdx: chartOriginMapping[keyOf(c)]})
+			picked = append(picked, pickedItem{chart: c, mappingIdx: chartOriginMapping[keyOf(c)]})
 		}
 	}
 	return picked

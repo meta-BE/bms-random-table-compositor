@@ -420,21 +420,6 @@ func TestSourceTableRepoSQL_BackfillEmptyLevelOrder_FillsEmptyFromCharts(t *test
 	require.Equal(t, 0, n2)
 }
 
-// makeScoreDBFileForTest はテスト用に最小限の score テーブルを持つ DB を作る
-// (persistence パッケージ内の同名ヘルパは unexported のためここで再現する)。
-func makeScoreDBFileForTest(t *testing.T, path string, rows [][2]any) {
-	t.Helper()
-	db, err := persistence.OpenDB(path)
-	require.NoError(t, err)
-	defer db.Close()
-	_, err = db.Exec(`CREATE TABLE score (sha256 TEXT NOT NULL, mode INTEGER, date INTEGER, PRIMARY KEY(sha256, mode))`)
-	require.NoError(t, err)
-	for _, r := range rows {
-		_, err = db.Exec(`INSERT INTO score(sha256, mode, date) VALUES(?, 0, ?)`, r[0], r[1])
-		require.NoError(t, err)
-	}
-}
-
 func TestLoadCharts_LastPlayedAt_WithScoreAttached(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
@@ -458,7 +443,7 @@ func TestLoadCharts_LastPlayedAt_WithScoreAttached(t *testing.T) {
 	}
 
 	scorePath := filepath.Join(dir, "score.db")
-	makeScoreDBFileForTest(t, scorePath, [][2]any{{"sha-a", 1700000000}})
+	makeScoreDBFile(t, scorePath, [][2]any{{"sha-a", 1700000000}})
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	songAtt := persistence.NewSongdataAttacher(mainDB, clock.System{}, logger)

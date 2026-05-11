@@ -152,20 +152,14 @@ func toPublishedTableDTOWithLevels(t domain.PublishedTable) PublishedTableDTO {
 }
 
 // normalizeWeightConfig は DTO の WeightMode / WeightParamX を正規化・検証する。
-// 既定値: WeightMode は空文字なら "off"、WeightParamX は 0 なら 10。
+// 既定値補完は domain.NormalizedWeight に委譲し、ここでは enum / 範囲の厳格チェックだけ行う。
 // probability モードでのみ X ∈ [2, 10000] を厳密にチェックする (sort / off では緩める)。
 func normalizeWeightConfig(modeStr string, x int) (domain.WeightMode, int, error) {
-	mode := domain.WeightMode(modeStr)
-	if mode == "" {
-		mode = domain.WeightModeOff
-	}
+	mode, x := domain.NormalizedWeight(domain.WeightMode(modeStr), x)
 	switch mode {
 	case domain.WeightModeOff, domain.WeightModeProbability, domain.WeightModeSort:
 	default:
 		return "", 0, fmt.Errorf("weight_mode が不正です: %q", modeStr)
-	}
-	if x == 0 {
-		x = 10
 	}
 	if mode == domain.WeightModeProbability {
 		if x < 2 || x > 10000 {

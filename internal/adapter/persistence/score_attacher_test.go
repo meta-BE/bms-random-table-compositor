@@ -1,4 +1,4 @@
-package persistence
+package persistence_test
 
 import (
 	"context"
@@ -8,13 +8,15 @@ import (
 	"testing"
 
 	"github.com/meta-BE/bms-random-table-compositor/internal/adapter/clock"
+	"github.com/meta-BE/bms-random-table-compositor/internal/adapter/persistence"
 	"github.com/stretchr/testify/require"
 )
 
 // makeScoreDBFile は最小限の score テーブルを持つテスト用 DB を作る。
+// 本パッケージ (persistence_test) 内の他テストからも共有で使う。
 func makeScoreDBFile(t *testing.T, path string, rows [][2]any) {
 	t.Helper()
-	db, err := OpenDB(path)
+	db, err := persistence.OpenDB(path)
 	require.NoError(t, err)
 	defer db.Close()
 	_, err = db.Exec(`CREATE TABLE score (sha256 TEXT NOT NULL, mode INTEGER, date INTEGER, PRIMARY KEY(sha256, mode))`)
@@ -31,13 +33,13 @@ func TestScoreDBAttacher_AttachAndDetach(t *testing.T) {
 	scorePath := filepath.Join(dir, "score.db")
 	makeScoreDBFile(t, scorePath, [][2]any{{"sha-a", 1000}, {"sha-b", 2000}})
 
-	mainDB, err := OpenDB(mainPath)
+	mainDB, err := persistence.OpenDB(mainPath)
 	require.NoError(t, err)
 	defer mainDB.Close()
 	mainDB.SetMaxOpenConns(1)
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	a := NewScoreDBAttacher(mainDB, clock.System{}, logger)
+	a := persistence.NewScoreDBAttacher(mainDB, clock.System{}, logger)
 	require.False(t, a.IsAttached())
 
 	require.NoError(t, a.Attach(context.Background(), scorePath))
@@ -54,13 +56,13 @@ func TestScoreDBAttacher_AttachAndDetach(t *testing.T) {
 func TestScoreDBAttacher_AttachEmptyPathIsNoop(t *testing.T) {
 	dir := t.TempDir()
 	mainPath := filepath.Join(dir, "main.db")
-	mainDB, err := OpenDB(mainPath)
+	mainDB, err := persistence.OpenDB(mainPath)
 	require.NoError(t, err)
 	defer mainDB.Close()
 	mainDB.SetMaxOpenConns(1)
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	a := NewScoreDBAttacher(mainDB, clock.System{}, logger)
+	a := persistence.NewScoreDBAttacher(mainDB, clock.System{}, logger)
 	require.NoError(t, a.Attach(context.Background(), ""))
 	require.False(t, a.IsAttached())
 }
@@ -75,19 +77,19 @@ func TestScoreDBAttacher_RejectsDBWithoutScoreTable(t *testing.T) {
 	songdataLikePath := filepath.Join(dir, "not_score.db")
 
 	// score テーブルが無い (song テーブルしかない) DB を作る
-	notScoreDB, err := OpenDB(songdataLikePath)
+	notScoreDB, err := persistence.OpenDB(songdataLikePath)
 	require.NoError(t, err)
 	_, err = notScoreDB.Exec(`CREATE TABLE song (md5 TEXT NOT NULL, sha256 TEXT NOT NULL, PRIMARY KEY(md5))`)
 	require.NoError(t, err)
 	notScoreDB.Close()
 
-	mainDB, err := OpenDB(mainPath)
+	mainDB, err := persistence.OpenDB(mainPath)
 	require.NoError(t, err)
 	defer mainDB.Close()
 	mainDB.SetMaxOpenConns(1)
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	a := NewScoreDBAttacher(mainDB, clock.System{}, logger)
+	a := persistence.NewScoreDBAttacher(mainDB, clock.System{}, logger)
 	err = a.Attach(context.Background(), songdataLikePath)
 	require.Error(t, err, "score テーブルが無い DB は attach 失敗扱い")
 	require.False(t, a.IsAttached(), "失敗時はアタッチ状態を保持しない")
@@ -107,13 +109,13 @@ func TestScoreDBAttacher_ReAttach(t *testing.T) {
 	makeScoreDBFile(t, score1, [][2]any{{"a", 1}})
 	makeScoreDBFile(t, score2, [][2]any{{"b", 2}, {"c", 3}})
 
-	mainDB, err := OpenDB(mainPath)
+	mainDB, err := persistence.OpenDB(mainPath)
 	require.NoError(t, err)
 	defer mainDB.Close()
 	mainDB.SetMaxOpenConns(1)
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	a := NewScoreDBAttacher(mainDB, clock.System{}, logger)
+	a := persistence.NewScoreDBAttacher(mainDB, clock.System{}, logger)
 	require.NoError(t, a.Attach(context.Background(), score1))
 
 	var n int

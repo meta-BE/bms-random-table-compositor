@@ -48,8 +48,9 @@ func (a *ScoreDBAttacher) Attach(ctx context.Context, path string) error {
 
 	dsn := fmt.Sprintf("file:%s?mode=ro", url.QueryEscape(path))
 	if _, err := a.db.ExecContext(ctx, "ATTACH DATABASE ? AS sc", dsn); err != nil {
-		a.recordError(err.Error())
-		return fmt.Errorf("attach score %q: %w", path, err)
+		wrapped := fmt.Errorf("attach score %q: %w", path, err)
+		a.recordError(wrapped.Error())
+		return wrapped
 	}
 
 	// score テーブルの存在確認も兼ねて COUNT を取る。失敗したら誤ったファイル
@@ -59,12 +60,12 @@ func (a *ScoreDBAttacher) Attach(ctx context.Context, path string) error {
 	var count int
 	row := a.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM sc.score")
 	if err := row.Scan(&count); err != nil {
-		msg := fmt.Sprintf("score テーブルが見つかりません (%s に score テーブルが無いか、beatoraja の score.db ではありません): %v", path, err)
-		a.recordError(msg)
+		wrapped := fmt.Errorf("score テーブルが見つかりません (%s に score テーブルが無いか、beatoraja の score.db ではありません): %w", path, err)
+		a.recordError(wrapped.Error())
 		if _, derr := a.db.ExecContext(ctx, "DETACH DATABASE sc"); derr != nil {
 			a.log.Warn("detach after count failure also failed", "err", derr)
 		}
-		return fmt.Errorf("validate sc.score %q: %w", path, err)
+		return wrapped
 	}
 
 	now := a.clock.Now()

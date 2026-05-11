@@ -61,21 +61,14 @@ func (r *PublishedTableRepoSQL) Create(ctx context.Context, t domain.PublishedTa
 	if t.OwnedOnly {
 		owned = 1
 	}
-	wMode := string(t.Pick.WeightMode)
-	if wMode == "" {
-		wMode = string(domain.WeightModeOff)
-	}
-	wX := t.Pick.WeightParamX
-	if wX <= 0 {
-		wX = 10
-	}
+	wMode, wX := domain.NormalizedWeight(t.Pick.WeightMode, t.Pick.WeightParamX)
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO published_table
 		 (id, slug, display_name, symbol, owned_only, pick_refresh_mode,
 		  weight_mode, weight_param_x, sort_order)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		t.ID, t.Slug, t.DisplayName, t.Symbol, owned, string(t.Pick.RefreshMode),
-		wMode, wX, t.SortOrder,
+		string(wMode), wX, t.SortOrder,
 	); err != nil {
 		if isUniqueSlugViolation(err) {
 			return "", fmt.Errorf("%w: %s", usecase.ErrSlugDuplicated, t.Slug)
@@ -245,14 +238,7 @@ func (r *PublishedTableRepoSQL) Update(ctx context.Context, t domain.PublishedTa
 	if t.OwnedOnly {
 		owned = 1
 	}
-	wMode := string(t.Pick.WeightMode)
-	if wMode == "" {
-		wMode = string(domain.WeightModeOff)
-	}
-	wX := t.Pick.WeightParamX
-	if wX <= 0 {
-		wX = 10
-	}
+	wMode, wX := domain.NormalizedWeight(t.Pick.WeightMode, t.Pick.WeightParamX)
 	res, err := tx.ExecContext(ctx,
 		`UPDATE published_table SET
 		   slug=?, display_name=?, symbol=?, owned_only=?,
@@ -260,7 +246,7 @@ func (r *PublishedTableRepoSQL) Update(ctx context.Context, t domain.PublishedTa
 		   sort_order=?, updated_at=datetime('now')
 		 WHERE id=?`,
 		t.Slug, t.DisplayName, t.Symbol, owned,
-		string(t.Pick.RefreshMode), wMode, wX,
+		string(t.Pick.RefreshMode), string(wMode), wX,
 		t.SortOrder, t.ID,
 	)
 	if err != nil {
