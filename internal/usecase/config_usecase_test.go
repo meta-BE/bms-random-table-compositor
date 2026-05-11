@@ -75,3 +75,29 @@ func TestConfigUseCase_SetSongdataDBPath_FiresHooks(t *testing.T) {
 	require.NoError(t, uc.SetSongdataDBPath(context.Background(), "/path"))
 	require.Equal(t, 2, calls)
 }
+
+func TestConfigUseCase_GetSetScoreDBPath(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeConfigStore()
+	uc := usecase.NewConfigUseCase(store)
+
+	p, err := uc.GetScoreDBPath(ctx)
+	require.NoError(t, err)
+	require.Equal(t, "", p)
+
+	require.NoError(t, uc.SetScoreDBPath(ctx, "/abs/score.db"))
+	p, err = uc.GetScoreDBPath(ctx)
+	require.NoError(t, err)
+	require.Equal(t, "/abs/score.db", p)
+}
+
+func TestConfigUseCase_AddScorePathChangeHook_FiresOnSet(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeConfigStore()
+	uc := usecase.NewConfigUseCase(store)
+	calls := 0
+	uc.AddScoreDBPathChangeHook(func() { calls++ })
+	require.NoError(t, uc.SetScoreDBPath(ctx, "/a.db"))
+	require.NoError(t, uc.SetScoreDBPath(ctx, "/b.db"))
+	require.Equal(t, 2, calls)
+}

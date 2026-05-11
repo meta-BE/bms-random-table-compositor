@@ -12,6 +12,7 @@ import (
 const (
 	keyServerPort     = "server_port"
 	keySongdataDBPath = "songdata_db_path"
+	keyScoreDBPath    = "score_db_path"
 	defaultServerPort = 50000
 )
 
@@ -21,6 +22,7 @@ const (
 type ConfigUseCase struct {
 	store         port.ConfigStore
 	songdataHooks []func()
+	scoreHooks    []func()
 }
 
 // NewConfigUseCase は新しい ConfigUseCase を作る。
@@ -74,6 +76,33 @@ func (u *ConfigUseCase) SetSongdataDBPath(ctx context.Context, path string) erro
 		return err
 	}
 	for _, fn := range u.songdataHooks {
+		fn()
+	}
+	return nil
+}
+
+// AddScoreDBPathChangeHook は score_db_path 変更時に呼ばれるフックを追加する。
+// Bootstrap で ScoreDBAttacher.ReAttach と PickUseCase.InvalidateAll を登録する想定。
+func (u *ConfigUseCase) AddScoreDBPathChangeHook(fn func()) {
+	u.scoreHooks = append(u.scoreHooks, fn)
+}
+
+// GetScoreDBPath は beatoraja の score.db のパスを返す。未設定時は空文字。
+func (u *ConfigUseCase) GetScoreDBPath(ctx context.Context) (string, error) {
+	v, _, err := u.store.Get(ctx, keyScoreDBPath)
+	if err != nil {
+		return "", err
+	}
+	return v, nil
+}
+
+// SetScoreDBPath は score.db のパスを保存する。
+// 保存成功後に登録された ScoreDBPathChangeHook を全て呼ぶ。
+func (u *ConfigUseCase) SetScoreDBPath(ctx context.Context, path string) error {
+	if err := u.store.Set(ctx, keyScoreDBPath, path); err != nil {
+		return err
+	}
+	for _, fn := range u.scoreHooks {
 		fn()
 	}
 	return nil
