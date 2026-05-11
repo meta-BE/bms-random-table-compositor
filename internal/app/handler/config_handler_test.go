@@ -64,3 +64,28 @@ func TestConfigHandler_PickSongdataDB_NoContext(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "", got)
 }
+
+func TestConfigHandler_GetServerConfig_IncludesScoreDBPath(t *testing.T) {
+	h := newHandler()
+	cfg, err := h.GetServerConfig()
+	require.NoError(t, err)
+	require.Equal(t, "", cfg.ScoreDBPath)
+}
+
+func TestConfigHandler_SetScoreDBPath_Persists(t *testing.T) {
+	h := newHandler()
+	require.NoError(t, h.SetScoreDBPath("/tmp/score.db"))
+	cfg, err := h.GetServerConfig()
+	require.NoError(t, err)
+	require.Equal(t, "/tmp/score.db", cfg.ScoreDBPath)
+}
+
+func TestConfigHandler_PickScoreDB_NoContext(t *testing.T) {
+	t.Parallel()
+	uc := usecase.NewConfigUseCase(&fakeStore{data: map[string]string{}})
+	h := handler.NewConfigHandler(uc)
+	// SetContext 前は ctx が context.Background() 固定。runtime API は呼ばない契約とする。
+	got, err := h.PickScoreDB()
+	require.NoError(t, err)
+	require.Equal(t, "", got, "SetContext 前は空文字")
+}

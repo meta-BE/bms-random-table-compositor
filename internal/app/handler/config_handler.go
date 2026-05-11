@@ -11,6 +11,7 @@ import (
 type ServerConfig struct {
 	Port           int    `json:"port"`
 	SongdataDBPath string `json:"songdataDbPath"`
+	ScoreDBPath    string `json:"scoreDbPath"`
 }
 
 // ConfigHandler は Wails Bind 経由でフロントエンドから呼ばれる設定ハンドラ。
@@ -29,17 +30,21 @@ func (h *ConfigHandler) SetContext(ctx context.Context) {
 	h.ctx = ctx
 }
 
-// GetServerConfig は現在の設定値（ポート / songdata.db パス）を返す。
+// GetServerConfig は現在の設定値（ポート / songdata.db パス / score.db パス）を返す。
 func (h *ConfigHandler) GetServerConfig() (ServerConfig, error) {
 	port, err := h.uc.GetServerPort(h.ctx)
 	if err != nil {
 		return ServerConfig{}, err
 	}
-	dbPath, err := h.uc.GetSongdataDBPath(h.ctx)
+	songdataPath, err := h.uc.GetSongdataDBPath(h.ctx)
 	if err != nil {
 		return ServerConfig{}, err
 	}
-	return ServerConfig{Port: port, SongdataDBPath: dbPath}, nil
+	scorePath, err := h.uc.GetScoreDBPath(h.ctx)
+	if err != nil {
+		return ServerConfig{}, err
+	}
+	return ServerConfig{Port: port, SongdataDBPath: songdataPath, ScoreDBPath: scorePath}, nil
 }
 
 // SetServerPort はサーバポート番号を保存する。範囲外はエラー。
@@ -62,6 +67,28 @@ func (h *ConfigHandler) PickSongdataDB() (string, error) {
 	}
 	return wailsruntime.OpenFileDialog(h.ctx, wailsruntime.OpenDialogOptions{
 		Title: "songdata.db を選択",
+		Filters: []wailsruntime.FileFilter{
+			{DisplayName: "SQLite データベース (*.db)", Pattern: "*.db"},
+			{DisplayName: "すべてのファイル (*.*)", Pattern: "*"},
+		},
+	})
+}
+
+// SetScoreDBPath は beatoraja の score.db パスを保存する。
+func (h *ConfigHandler) SetScoreDBPath(path string) error {
+	return h.uc.SetScoreDBPath(h.ctx, path)
+}
+
+// PickScoreDB はユーザーに score.db のパスを OS のファイル選択ダイアログで
+// 選ばせ、選ばれた絶対パスを返す。キャンセル時は空文字を返す。
+// SetContext 前 (Wails OnStartup 前) に呼ばれた場合はランタイム API を呼ばずに
+// 空文字を返す (テスト用のセーフガード)。
+func (h *ConfigHandler) PickScoreDB() (string, error) {
+	if h.ctx == nil || h.ctx == context.Background() {
+		return "", nil
+	}
+	return wailsruntime.OpenFileDialog(h.ctx, wailsruntime.OpenDialogOptions{
+		Title: "score.db を選択",
 		Filters: []wailsruntime.FileFilter{
 			{DisplayName: "SQLite データベース (*.db)", Pattern: "*.db"},
 			{DisplayName: "すべてのファイル (*.*)", Pattern: "*"},
