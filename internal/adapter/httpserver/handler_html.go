@@ -81,13 +81,15 @@ func buildHTMLPageData(pub domain.PublishedTable, r domain.PickResult) htmlPageD
 			if symbol == "" {
 				symbol = pub.Symbol
 			}
+			url, _ := c.Raw["url"].(string)
+			urlDiff, _ := c.Raw["url_diff"].(string)
 			charts = append(charts, htmlChart{
 				Level:    symbol + c.Level,
 				Title:    c.Title,
 				Artist:   c.Artist,
 				LR2IRURL: lr2irURL(c.MD5),
-				URL:      rawString(c.Raw, "url"),
-				URLDiff:  rawString(c.Raw, "url_diff"),
+				URL:      url,
+				URLDiff:  urlDiff,
 				Owned:    owned,
 			})
 		}
@@ -114,20 +116,6 @@ func lr2irURL(md5 string) string {
 		return ""
 	}
 	return lr2irRankingURLPrefix + md5
-}
-
-// rawString は data.json パススルーフィールドから安全に文字列を取り出す。
-// キー欠如・型不一致・nil はすべて "" を返す。
-func rawString(raw map[string]any, key string) string {
-	v, ok := raw[key]
-	if !ok {
-		return ""
-	}
-	s, ok := v.(string)
-	if !ok {
-		return ""
-	}
-	return s
 }
 
 // handleHTMLError は usecase の sentinel error を HTTP ステータスに変換する。

@@ -448,8 +448,9 @@
           <div class="divider my-2"></div>
           <PublishedTableLevelEditor bind:levels={form.levels} {sources} />
         {:else}
+          {@const wizardSrc = sources.find(s => s.id === wizardSourceId)}
           <div class="alert alert-info text-xs">
-            ウィザード生成: ソース表「{sources.find(s => s.id === wizardSourceId)?.displayName || sources.find(s => s.id === wizardSourceId)?.name}」のレベル体系を反映した公開表が作成されます。詳細編集は保存後に「編集」から行えます。
+            ウィザード生成: ソース表「{wizardSrc?.displayName || wizardSrc?.name}」のレベル体系を反映した公開表が作成されます。詳細編集は保存後に「編集」から行えます。
           </div>
         {/if}
       </div>

@@ -108,13 +108,13 @@ func (u *PickUseCase) cachedIfFresh(pub domain.PublishedTable) (domain.PickResul
 // 各公開レベルのシードは baseSeed XOR fnv32(level.ID) として独立させ、レベル単位の
 // 決定論性を確保する（公開レベル順や追加・削除の影響が他レベルに波及しない）。
 func (u *PickUseCase) regenerate(ctx context.Context, pub domain.PublishedTable) (domain.PickResult, error) {
-	chartsBySrc, err := u.loadSourceCharts(ctx, pub)
+	now := u.clock.Now()
+	chartsBySrcLevel, err := u.loadSourceCharts(ctx, pub)
 	if err != nil {
 		return domain.PickResult{}, err
 	}
 
-	baseSeed, seedKey := u.makeSeed(pub)
-	now := u.clock.Now()
+	baseSeed, seedKey := u.makeSeed(pub, now)
 
 	var finalCharts []domain.PickedChart
 	var finalLevelOrder []string
@@ -122,7 +122,7 @@ func (u *PickUseCase) regenerate(ctx context.Context, pub domain.PublishedTable)
 	for _, lv := range pub.Levels {
 		levelSeed := baseSeed ^ int64(fnv32(lv.ID))
 		rng := rand.New(u.randNew(levelSeed))
-		picked, err := u.pickLevel(ctx, lv, chartsBySrc, rng, now)
+		picked, err := u.pickLevel(ctx, lv, chartsBySrcLevel, rng, now)
 		if err != nil {
 			return domain.PickResult{}, fmt.Errorf("pick level %q: %w", lv.Name, err)
 		}
@@ -135,7 +135,7 @@ func (u *PickUseCase) regenerate(ctx context.Context, pub domain.PublishedTable)
 
 	return domain.PickResult{
 		PublishedTableID: pub.ID,
-		GeneratedAt:      u.clock.Now(),
+		GeneratedAt:      now,
 		SeedKey:          seedKey,
 		Charts:           finalCharts,
 		LevelOrder:       finalLevelOrder,
@@ -143,10 +143,11 @@ func (u *PickUseCase) regenerate(ctx context.Context, pub domain.PublishedTable)
 }
 
 // loadSourceCharts は pub.Levels に現れる全ソース表について
-// 存在 / fetch 状態確認 + LoadCharts を 1 回ずつ実行し、結果を map で返す。
+// 存在 / fetch 状態確認 + LoadCharts を 1 回ずつ実行し、結果を (srcID, level) でバケット化して返す。
+// バケット化により pickLevel 側のマッピング毎の線形フィルタを O(1) lookup に削減する。
 // 同一ソース表が複数の公開レベル・マッピングから参照されても再ロードしない。
-func (u *PickUseCase) loadSourceCharts(ctx context.Context, pub domain.PublishedTable) (map[string][]domain.EnrichedChart, error) {
-	out := map[string][]domain.EnrichedChart{}
+func (u *PickUseCase) loadSourceCharts(ctx context.Context, pub domain.PublishedTable) (map[string]map[string][]domain.EnrichedChart, error) {
+	out := map[string]map[string][]domain.EnrichedChart{}
 	for _, lv := range pub.Levels {
 		for _, mp := range lv.Mappings {
 			if _, ok := out[mp.SourceTableID]; ok {
@@ -163,24 +164,28 @@ func (u *PickUseCase) loadSourceCharts(ctx context.Context, pub domain.Published
 			if err != nil {
 				return nil, fmt.Errorf("load charts %q: %w", mp.SourceTableID, err)
 			}
-			out[mp.SourceTableID] = cs
+			byLevel := map[string][]domain.EnrichedChart{}
+			for _, c := range cs {
+				byLevel[c.Level] = append(byLevel[c.Level], c)
+			}
+			out[mp.SourceTableID] = byLevel
 		}
 	}
 	return out, nil
 }
 
 // pickLevel は 1 公開レベル分のフェーズ 1 + フェーズ 2 を実行する。
-// chartsBySrc は regenerate でロード済みの「ソース表 ID → EnrichedChart[]」マップ。
+// chartsBySrcLevel は regenerate でロード・バケット化済みの「ソース表 ID → ソースレベル → EnrichedChart[]」マップ。
 // dedup の主キーは MD5、空なら SHA256 をフォールバック。
 // 出力する PickedChart は EnrichedChart (ソース由来) + PublicLevel (公開レベル名 lv.Name) を持つ。
 func (u *PickUseCase) pickLevel(
 	ctx context.Context, lv domain.PublishedTableLevel,
-	chartsBySrc map[string][]domain.EnrichedChart,
+	chartsBySrcLevel map[string]map[string][]domain.EnrichedChart,
 	rng *rand.Rand, now time.Time,
 ) ([]domain.PickedChart, error) {
 	pools := make([][]domain.EnrichedChart, len(lv.Mappings))
 	for i, mp := range lv.Mappings {
-		pools[i] = filterByLevel(chartsBySrc[mp.SourceTableID], mp.SourceLevel)
+		pools[i] = chartsBySrcLevel[mp.SourceTableID][mp.SourceLevel]
 	}
 
 	keyOf := func(c domain.EnrichedChart) string {
@@ -265,17 +270,6 @@ func (u *PickUseCase) pickLevel(
 	return out, nil
 }
 
-// filterByLevel は EnrichedChart 列を SourceChart.Level 一致でフィルタする。
-func filterByLevel(charts []domain.EnrichedChart, level string) []domain.EnrichedChart {
-	out := make([]domain.EnrichedChart, 0, len(charts))
-	for _, c := range charts {
-		if c.Level == level {
-			out = append(out, c)
-		}
-	}
-	return out
-}
-
 // weightedSampleWithoutReplacement は重み付き非復元サンプリング（k 件まで）。
 // 重み 0 以下の譜面は対象外。pool が k 件未満なら採れた件数だけ返す。
 // 累積重み + 線形走査による「ロト方式」を採用（pool 規模が高々数百〜数千なので O(k * |pool|) で十分）。
@@ -324,8 +318,8 @@ func weightedSampleWithoutReplacement(
 }
 
 // makeSeed はモード別のシードと SeedKey を返す。
-func (u *PickUseCase) makeSeed(pub domain.PublishedTable) (int64, string) {
-	now := u.clock.Now()
+// 呼出側で取得した now を共有することで、regenerate 内の時刻参照を 1 回に揃える。
+func (u *PickUseCase) makeSeed(pub domain.PublishedTable, now time.Time) (int64, string) {
 	hash := fnv32(pub.ID)
 	switch pub.Pick.RefreshMode {
 	case domain.RefreshModeDaily:

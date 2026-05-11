@@ -2,6 +2,7 @@ package httpserver
 
 import (
 	"encoding/json"
+	"maps"
 	"net/http"
 
 	"github.com/meta-BE/bms-random-table-compositor/internal/domain"
@@ -36,9 +37,7 @@ func newDataHandler(deps Deps) http.HandlerFunc {
 // is_owned / last_played_at は beatoraja 互換維持のため data.json には出力しない。
 func mergeChart(c domain.PickedChart) map[string]any {
 	out := make(map[string]any, len(c.Raw)+5)
-	for k, v := range c.Raw {
-		out[k] = v
-	}
+	maps.Copy(out, c.Raw)
 	out["md5"] = c.MD5
 	if c.SHA256 != "" {
 		out["sha256"] = c.SHA256

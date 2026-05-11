@@ -242,6 +242,7 @@ func (u *PublishedTableUseCase) buildLevelsFromInput(ctx context.Context, inputs
 		if lin.PerMappingPick < 0 || lin.TotalPick < 0 {
 			return nil, ErrInvalidPickCount
 		}
+		lvlID := u.idGen.New()
 		seenMap := map[string]struct{}{}
 		ms := make([]domain.PublishedTableLevelMapping, 0, len(lin.Mappings))
 		for j, mp := range lin.Mappings {
@@ -257,15 +258,12 @@ func (u *PublishedTableUseCase) buildLevelsFromInput(ctx context.Context, inputs
 			}
 			seenMap[key] = struct{}{}
 			ms = append(ms, domain.PublishedTableLevelMapping{
-				ID:            u.idGen.New(),
-				SourceTableID: mp.SourceTableID,
-				SourceLevel:   mp.SourceLevel,
-				SortOrder:     j,
+				ID:                    u.idGen.New(),
+				PublishedTableLevelID: lvlID,
+				SourceTableID:         mp.SourceTableID,
+				SourceLevel:           mp.SourceLevel,
+				SortOrder:             j,
 			})
-		}
-		lvlID := u.idGen.New()
-		for k := range ms {
-			ms[k].PublishedTableLevelID = lvlID
 		}
 		out = append(out, domain.PublishedTableLevel{
 			ID:               lvlID,
