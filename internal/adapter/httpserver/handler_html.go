@@ -118,8 +118,8 @@ func buildHTMLPageData(pub domain.PublishedTable, r domain.PickResult) htmlPageD
 }
 
 // formatRelativeDuration は経過時間を相対表記に変換する。
-// 秒 / 時間 / 日 / ヶ月(30日) / 年(365日) の 5 単位で表示し、分単位は使わない。
-// 60秒以上 1時間未満は "1時間前" に丸める。負の値 (時計ずれ) は 0 にクランプ。
+// 秒 / 分 / 時間 / 日 / ヶ月(30日) / 年(365日) の 6 単位で表示する。
+// 負の値 (時計ずれ) は 0 にクランプ。
 func formatRelativeDuration(d time.Duration) string {
 	if d < 0 {
 		d = 0
@@ -128,11 +128,12 @@ func formatRelativeDuration(d time.Duration) string {
 	if secs < 60 {
 		return fmt.Sprintf("%d秒前", secs)
 	}
-	hours := secs / 3600
+	mins := secs / 60
+	if mins < 60 {
+		return fmt.Sprintf("%d分前", mins)
+	}
+	hours := mins / 60
 	if hours < 24 {
-		if hours < 1 {
-			hours = 1
-		}
 		return fmt.Sprintf("%d時間前", hours)
 	}
 	days := hours / 24

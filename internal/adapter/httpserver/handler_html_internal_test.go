@@ -9,7 +9,7 @@ import (
 )
 
 // TestFormatRelativeDuration_Boundaries は相対日時フォーマッタの境界値テスト。
-// 秒/時間/日/ヶ月(30日)/年(365日) の 5 単位境界と負値クランプを網羅する。
+// 秒/分/時間/日/ヶ月(30日)/年(365日) の 6 単位境界と負値クランプを網羅する。
 func TestFormatRelativeDuration_Boundaries(t *testing.T) {
 	cases := []struct {
 		name string
@@ -20,10 +20,10 @@ func TestFormatRelativeDuration_Boundaries(t *testing.T) {
 		{"0秒", 0, "0秒前"},
 		{"30秒", 30 * time.Second, "30秒前"},
 		{"59秒", 59 * time.Second, "59秒前"},
-		{"60秒は 1時間扱い", 60 * time.Second, "1時間前"},
-		{"30分も 1時間扱い", 30 * time.Minute, "1時間前"},
-		{"59分も 1時間扱い", 59 * time.Minute, "1時間前"},
-		{"1時間", time.Hour, "1時間前"},
+		{"60秒 = 1分", 60 * time.Second, "1分前"},
+		{"30分", 30 * time.Minute, "30分前"},
+		{"59分", 59 * time.Minute, "59分前"},
+		{"60分 = 1時間", 60 * time.Minute, "1時間前"},
 		{"23時間", 23 * time.Hour, "23時間前"},
 		{"24時間 = 1日", 24 * time.Hour, "1日前"},
 		{"29日", 29 * 24 * time.Hour, "29日前"},
