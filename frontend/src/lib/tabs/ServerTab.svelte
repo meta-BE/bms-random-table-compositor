@@ -2,8 +2,8 @@
   import { onMount, onDestroy } from 'svelte';
   import { api, type ServerConfig, type ServerStatusDTO, type SongdataAttachStatusDTO } from '../api';
 
-  let cfg: ServerConfig = { port: 50000, songdataDbPath: '' };
-  let savedCfg: ServerConfig = { port: 50000, songdataDbPath: '' };
+  let cfg: ServerConfig = { port: 50000, songdataDbPath: '', scoreDbPath: '' };
+  let savedCfg: ServerConfig = { port: 50000, songdataDbPath: '', scoreDbPath: '' };
   let status: ServerStatusDTO = { state: 'stopped', port: 0, startedAt: '', lastError: '' };
   let attach: SongdataAttachStatusDTO = { attached: false, path: '', songCount: 0, attachedAt: '', lastError: '' };
 
@@ -46,13 +46,27 @@
     if (unsubServer) unsubServer();
   });
 
-  $: dirty = cfg.port !== savedCfg.port || cfg.songdataDbPath !== savedCfg.songdataDbPath;
+  $: dirty =
+    cfg.port !== savedCfg.port ||
+    cfg.songdataDbPath !== savedCfg.songdataDbPath ||
+    cfg.scoreDbPath !== savedCfg.scoreDbPath;
 
   async function pickPath() {
     try {
       const picked = await api.pickSongdataDB();
       if (picked) {
         cfg.songdataDbPath = picked;
+      }
+    } catch (e) {
+      savingError = `ファイル選択に失敗: ${(e as Error).message}`;
+    }
+  }
+
+  async function pickScorePath() {
+    try {
+      const picked = await api.pickScoreDB();
+      if (picked) {
+        cfg.scoreDbPath = picked;
       }
     } catch (e) {
       savingError = `ファイル選択に失敗: ${(e as Error).message}`;
@@ -68,6 +82,9 @@
       }
       if (cfg.songdataDbPath !== savedCfg.songdataDbPath) {
         await api.setSongdataDBPath(cfg.songdataDbPath);
+      }
+      if (cfg.scoreDbPath !== savedCfg.scoreDbPath) {
+        await api.setScoreDBPath(cfg.scoreDbPath);
       }
       savedCfg = { ...cfg };
       // songdata.db パス変更でアタッチが再実行されるため状態を再取得
@@ -149,6 +166,15 @@
             <input class="input input-bordered input-sm join-item flex-1" type="text" bind:value={cfg.songdataDbPath} />
             <button class="btn btn-sm join-item" type="button" on:click={pickPath}>参照…</button>
           </div>
+        </div>
+
+        <div class="form-control w-full">
+          <label class="label"><span class="label-text">score.db のパス</span></label>
+          <div class="join w-full">
+            <input class="input input-bordered input-sm join-item flex-1" type="text" bind:value={cfg.scoreDbPath} />
+            <button class="btn btn-sm join-item" type="button" on:click={pickScorePath}>参照…</button>
+          </div>
+          <!-- score.db 用の状態表示 (アタッチ状態) は将来的に追加 (Task 5 で Status API を省略) -->
         </div>
 
         <div class="text-sm space-y-1 mt-4">

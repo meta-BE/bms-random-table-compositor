@@ -4,6 +4,8 @@ import {
   SetServerPort,
   SetSongdataDBPath,
   PickSongdataDB,
+  SetScoreDBPath,
+  PickScoreDB,
 } from '../../wailsjs/go/handler/ConfigHandler';
 import {
   ListSourceTables,
@@ -41,6 +43,7 @@ import { EventsOn, EventsOff } from '../../wailsjs/runtime/runtime';
 export type ServerConfig = {
   port: number;
   songdataDbPath: string;
+  scoreDbPath: string;
 };
 
 export type SourceTableDTO = {
@@ -192,6 +195,12 @@ export const api = {
   },
   pickSongdataDB(): Promise<string> {
     return PickSongdataDB() as Promise<string>;
+  },
+  setScoreDBPath(path: string): Promise<void> {
+    return SetScoreDBPath(path);
+  },
+  pickScoreDB(): Promise<string> {
+    return PickScoreDB() as Promise<string>;
   },
   // ---- ソース表 ----
   listSourceTables(): Promise<SourceTableDTO[]> {
