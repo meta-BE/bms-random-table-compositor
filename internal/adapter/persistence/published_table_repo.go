@@ -22,7 +22,7 @@ func NewPublishedTableRepoSQL(db *sql.DB) *PublishedTableRepoSQL {
 
 const publishedTableSelectColumns = `SELECT
 	id, slug, display_name, symbol, owned_only,
-	pick_refresh_mode, sort_order
+	pick_refresh_mode, weight_mode, weight_param_x, sort_order
  FROM published_table`
 
 func (r *PublishedTableRepoSQL) scanRow(s rowScanner) (domain.PublishedTable, error) {
@@ -30,15 +30,19 @@ func (r *PublishedTableRepoSQL) scanRow(s rowScanner) (domain.PublishedTable, er
 		t         domain.PublishedTable
 		ownedOnly int
 		mode      string
+		wMode     string
+		wX        int
 	)
 	if err := s.Scan(
 		&t.ID, &t.Slug, &t.DisplayName, &t.Symbol, &ownedOnly,
-		&mode, &t.SortOrder,
+		&mode, &wMode, &wX, &t.SortOrder,
 	); err != nil {
 		return domain.PublishedTable{}, err
 	}
 	t.OwnedOnly = ownedOnly != 0
 	t.Pick.RefreshMode = domain.RefreshMode(mode)
+	t.Pick.WeightMode = domain.WeightMode(wMode)
+	t.Pick.WeightParamX = wX
 	return t, nil
 }
 
@@ -57,11 +61,21 @@ func (r *PublishedTableRepoSQL) Create(ctx context.Context, t domain.PublishedTa
 	if t.OwnedOnly {
 		owned = 1
 	}
+	wMode := string(t.Pick.WeightMode)
+	if wMode == "" {
+		wMode = string(domain.WeightModeOff)
+	}
+	wX := t.Pick.WeightParamX
+	if wX <= 0 {
+		wX = 10
+	}
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO published_table
-		 (id, slug, display_name, symbol, owned_only, pick_refresh_mode, sort_order)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		t.ID, t.Slug, t.DisplayName, t.Symbol, owned, string(t.Pick.RefreshMode), t.SortOrder,
+		 (id, slug, display_name, symbol, owned_only, pick_refresh_mode,
+		  weight_mode, weight_param_x, sort_order)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		t.ID, t.Slug, t.DisplayName, t.Symbol, owned, string(t.Pick.RefreshMode),
+		wMode, wX, t.SortOrder,
 	); err != nil {
 		if isUniqueSlugViolation(err) {
 			return "", fmt.Errorf("%w: %s", usecase.ErrSlugDuplicated, t.Slug)
@@ -231,13 +245,23 @@ func (r *PublishedTableRepoSQL) Update(ctx context.Context, t domain.PublishedTa
 	if t.OwnedOnly {
 		owned = 1
 	}
+	wMode := string(t.Pick.WeightMode)
+	if wMode == "" {
+		wMode = string(domain.WeightModeOff)
+	}
+	wX := t.Pick.WeightParamX
+	if wX <= 0 {
+		wX = 10
+	}
 	res, err := tx.ExecContext(ctx,
 		`UPDATE published_table SET
 		   slug=?, display_name=?, symbol=?, owned_only=?,
-		   pick_refresh_mode=?, sort_order=?, updated_at=datetime('now')
+		   pick_refresh_mode=?, weight_mode=?, weight_param_x=?,
+		   sort_order=?, updated_at=datetime('now')
 		 WHERE id=?`,
 		t.Slug, t.DisplayName, t.Symbol, owned,
-		string(t.Pick.RefreshMode), t.SortOrder, t.ID,
+		string(t.Pick.RefreshMode), wMode, wX,
+		t.SortOrder, t.ID,
 	)
 	if err != nil {
 		if isUniqueSlugViolation(err) {

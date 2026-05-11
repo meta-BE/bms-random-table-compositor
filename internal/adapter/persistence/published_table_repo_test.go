@@ -217,6 +217,51 @@ func TestPublishedTableRepoSQL_Create_DuplicateSlug_ReturnsErrSlugDuplicated(t *
 	require.True(t, errors.Is(err, usecase.ErrSlugDuplicated))
 }
 
+func TestPublishedTableRepo_PersistsWeightFields(t *testing.T) {
+	pub, _ := setupPublishedTableRepo(t)
+	ctx := context.Background()
+
+	id := "p-weight-1"
+	_, err := pub.Create(ctx, domain.PublishedTable{
+		ID: id, Slug: "weight-1", DisplayName: "W1", Symbol: "★",
+		Pick: domain.PickConfig{
+			RefreshMode:  domain.RefreshModeManual,
+			WeightMode:   domain.WeightModeProbability,
+			WeightParamX: 25,
+		},
+	})
+	require.NoError(t, err)
+
+	got, err := pub.Get(ctx, id)
+	require.NoError(t, err)
+	require.Equal(t, domain.WeightModeProbability, got.Pick.WeightMode)
+	require.Equal(t, 25, got.Pick.WeightParamX)
+
+	got.Pick.WeightMode = domain.WeightModeSort
+	got.Pick.WeightParamX = 7
+	require.NoError(t, pub.Update(ctx, got))
+	got2, err := pub.Get(ctx, id)
+	require.NoError(t, err)
+	require.Equal(t, domain.WeightModeSort, got2.Pick.WeightMode)
+	require.Equal(t, 7, got2.Pick.WeightParamX)
+}
+
+func TestPublishedTableRepo_DefaultsWeightFieldsWhenAbsent(t *testing.T) {
+	pub, _ := setupPublishedTableRepo(t)
+	ctx := context.Background()
+
+	id := "p-weight-default"
+	_, err := pub.Create(ctx, domain.PublishedTable{
+		ID: id, Slug: "weight-default", DisplayName: "WD",
+		Pick: domain.PickConfig{RefreshMode: domain.RefreshModeManual},
+	})
+	require.NoError(t, err)
+	got, err := pub.Get(ctx, id)
+	require.NoError(t, err)
+	require.Equal(t, domain.WeightModeOff, got.Pick.WeightMode)
+	require.Equal(t, 10, got.Pick.WeightParamX, "Create で zero value は off/10 にフォールバック")
+}
+
 func TestPublishedTableRepoSQL_SlugExists(t *testing.T) {
 	pub, src := setupPublishedTableRepo(t)
 	seedSourceTable(t, src, "src-A")
