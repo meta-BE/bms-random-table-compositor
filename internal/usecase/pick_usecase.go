@@ -64,7 +64,6 @@ func (u *PickUseCase) PickBySlug(ctx context.Context, slug string) (domain.PickR
 }
 
 // ManualRefresh は手動再ピック。即座に再生成して store を上書きする。
-// ※ spec §7.4 の `POST /:slug/_refresh` で呼ばれるパス。GUI からも呼ぶ。
 func (u *PickUseCase) ManualRefresh(ctx context.Context, publishedID string) error {
 	pub, err := u.pubRepo.Get(ctx, publishedID)
 	if err != nil {
@@ -104,10 +103,16 @@ func (u *PickUseCase) cachedIfFresh(pub domain.PublishedTable) (domain.PickResul
 }
 
 // regenerate はピック結果を一から作成する。
-// pub.Levels を SortOrder 順に走査し、各公開レベルごとに pickLevel() でフェーズ 1+2 を実行する。
+// spec §6.3 に従い、公開表内に現れる全 source_table_id について
+// srcRepo.Get / LoadCharts を 1 回ずつだけ呼んで結果をキャッシュし、各公開レベルへ渡す。
 // 各公開レベルのシードは baseSeed XOR fnv32(level.ID) として独立させ、レベル単位の
 // 決定論性を確保する（公開レベル順や追加・削除の影響が他レベルに波及しない）。
 func (u *PickUseCase) regenerate(ctx context.Context, pub domain.PublishedTable) (domain.PickResult, error) {
+	chartsBySrc, err := u.loadSourceCharts(ctx, pub)
+	if err != nil {
+		return domain.PickResult{}, err
+	}
+
 	baseSeed, seedKey := u.makeSeed(pub)
 	now := u.clock.Now()
 
@@ -117,7 +122,7 @@ func (u *PickUseCase) regenerate(ctx context.Context, pub domain.PublishedTable)
 	for _, lv := range pub.Levels {
 		levelSeed := baseSeed ^ int64(fnv32(lv.ID))
 		rng := rand.New(u.randNew(levelSeed))
-		picked, err := u.pickLevel(ctx, pub, lv, rng, now)
+		picked, err := u.pickLevel(ctx, lv, chartsBySrc, rng, now)
 		if err != nil {
 			return domain.PickResult{}, fmt.Errorf("pick level %q: %w", lv.Name, err)
 		}
@@ -137,42 +142,47 @@ func (u *PickUseCase) regenerate(ctx context.Context, pub domain.PublishedTable)
 	}, nil
 }
 
+// loadSourceCharts は pub.Levels に現れる全ソース表について
+// 存在 / fetch 状態確認 + LoadCharts を 1 回ずつ実行し、結果を map で返す。
+// 同一ソース表が複数の公開レベル・マッピングから参照されても再ロードしない。
+func (u *PickUseCase) loadSourceCharts(ctx context.Context, pub domain.PublishedTable) (map[string][]domain.EnrichedChart, error) {
+	out := map[string][]domain.EnrichedChart{}
+	for _, lv := range pub.Levels {
+		for _, mp := range lv.Mappings {
+			if _, ok := out[mp.SourceTableID]; ok {
+				continue
+			}
+			src, err := u.srcRepo.Get(ctx, mp.SourceTableID)
+			if err != nil {
+				return nil, fmt.Errorf("get source table %q: %w", mp.SourceTableID, err)
+			}
+			if src.LastFetchStatus == domain.FetchStatusNever {
+				return nil, ErrSourceNotFetched
+			}
+			cs, err := u.srcRepo.LoadCharts(ctx, mp.SourceTableID, port.ChartQuery{OwnedOnly: pub.OwnedOnly})
+			if err != nil {
+				return nil, fmt.Errorf("load charts %q: %w", mp.SourceTableID, err)
+			}
+			out[mp.SourceTableID] = cs
+		}
+	}
+	return out, nil
+}
+
 // pickLevel は 1 公開レベル分のフェーズ 1 + フェーズ 2 を実行する。
-// ソース譜面の LoadCharts はソース表 ID ごとに 1 度だけ呼ぶ（マッピング数が多い場合の重複呼び出し回避）。
+// chartsBySrc は regenerate でロード済みの「ソース表 ID → EnrichedChart[]」マップ。
 // dedup の主キーは MD5、空なら SHA256 をフォールバック。
 // 出力する PickedChart は EnrichedChart (ソース由来) + PublicLevel (公開レベル名 lv.Name) を持つ。
-// EnrichedChart.Level はソース側のレベルそのままで、HTML 行頭セル等で参照される。
 func (u *PickUseCase) pickLevel(
-	ctx context.Context, pub domain.PublishedTable, lv domain.PublishedTableLevel,
+	ctx context.Context, lv domain.PublishedTableLevel,
+	chartsBySrc map[string][]domain.EnrichedChart,
 	rng *rand.Rand, now time.Time,
 ) ([]domain.PickedChart, error) {
-	// ソース表 ID → EnrichedChart[] のキャッシュ。同じ source_table_id を複数マッピングが参照しても LoadCharts は 1 回。
-	sources := map[string][]domain.EnrichedChart{}
-	for _, mp := range lv.Mappings {
-		if _, ok := sources[mp.SourceTableID]; ok {
-			continue
-		}
-		src, err := u.srcRepo.Get(ctx, mp.SourceTableID)
-		if err != nil {
-			return nil, fmt.Errorf("get source table %q: %w", mp.SourceTableID, err)
-		}
-		if src.LastFetchStatus == domain.FetchStatusNever {
-			return nil, ErrSourceNotFetched
-		}
-		cs, err := u.srcRepo.LoadCharts(ctx, mp.SourceTableID, port.ChartQuery{OwnedOnly: pub.OwnedOnly})
-		if err != nil {
-			return nil, fmt.Errorf("load charts %q: %w", mp.SourceTableID, err)
-		}
-		sources[mp.SourceTableID] = cs
-	}
-
-	// 各マッピングの局所プール（source level でフィルタ）
 	pools := make([][]domain.EnrichedChart, len(lv.Mappings))
 	for i, mp := range lv.Mappings {
-		pools[i] = filterByLevel(sources[mp.SourceTableID], mp.SourceLevel)
+		pools[i] = filterByLevel(chartsBySrc[mp.SourceTableID], mp.SourceLevel)
 	}
 
-	// dedup キー（MD5 主、空なら SHA256）
 	keyOf := func(c domain.EnrichedChart) string {
 		if c.MD5 != "" {
 			return "md5:" + c.MD5
@@ -180,10 +190,8 @@ func (u *PickUseCase) pickLevel(
 		return "sha:" + c.SHA256
 	}
 
-	// unionPool: SortOrder 昇順（= mappings 順）で走査し、重複は最初に出会ったマッピング側のみ採用する。
-	// フェーズ 2 で「フェーズ 1 で取り切れなかった残りプール」として使う。
-	// chartOriginMapping: 各譜面が「最初に出現したマッピング index」を記録する。
-	// HTML 出力でマッピング順に並べるため、フェーズ 2 で取られた譜面の起源マッピングも判定可能にする。
+	// unionPool: SortOrder 昇順（= mappings 順）で走査し、重複は最初に出会ったマッピング側のみ採用。
+	// chartOriginMapping: フェーズ 2 で取られた譜面を「最初に出現したマッピング」の群に並べるための起源情報。
 	seenUnion := map[string]struct{}{}
 	chartOriginMapping := map[string]int{}
 	var unionPool []domain.EnrichedChart
@@ -199,15 +207,15 @@ func (u *PickUseCase) pickLevel(
 		}
 	}
 
-	// pickedItem: 整列のため (mapping_index, chart) を保持する内部表現。
 	type pickedItem struct {
 		chart      domain.EnrichedChart
 		mappingIdx int
 	}
 
-	// フェーズ 1: 各マッピングから m 曲。既選曲は除外。
 	var picked []pickedItem
 	pickedKeys := map[string]struct{}{}
+
+	// フェーズ 1: 各マッピングから m 曲。pools[i] は LoadCharts の position 昇順を保つ。
 	m := lv.PerMappingPick
 	for i := range pools {
 		avail := make([]domain.EnrichedChart, 0, len(pools[i]))
@@ -217,7 +225,6 @@ func (u *PickUseCase) pickLevel(
 			}
 			avail = append(avail, c)
 		}
-		sort.SliceStable(avail, func(a, b int) bool { return avail[a].Position < avail[b].Position })
 		taken := weightedSampleWithoutReplacement(ctx, avail, m, u.weighter, rng, now)
 		for _, c := range taken {
 			pickedKeys[keyOf(c)] = struct{}{}
@@ -225,10 +232,7 @@ func (u *PickUseCase) pickLevel(
 		}
 	}
 
-	// フェーズ 2: 合計 n 曲を目標に、unionPool 残りから補填。
-	// sum(m) > n の場合は need <= 0 となりスキップ（フェーズ 1 で既に超過分を取得している）。
-	// フェーズ 2 で取られた譜面は chartOriginMapping から起源マッピング index を引き継ぐ
-	// （= マッピング順に並べたとき正しい位置に配置される）。
+	// フェーズ 2: sum(picked) < n なら unionPool 残りから補填。
 	need := lv.TotalPick - len(picked)
 	if need > 0 {
 		remaining := make([]domain.EnrichedChart, 0, len(unionPool))
@@ -238,7 +242,6 @@ func (u *PickUseCase) pickLevel(
 			}
 			remaining = append(remaining, c)
 		}
-		sort.SliceStable(remaining, func(a, b int) bool { return remaining[a].Position < remaining[b].Position })
 		taken := weightedSampleWithoutReplacement(ctx, remaining, need, u.weighter, rng, now)
 		for _, c := range taken {
 			k := keyOf(c)
@@ -247,9 +250,7 @@ func (u *PickUseCase) pickLevel(
 		}
 	}
 
-	// 出力整列: (mappingIdx 昇順, Position 昇順) の安定整列。
-	// マッピング 0 由来の譜面が先に並び、各群内ではソース表 curator の Position 順を尊重。
-	// フェーズ 2 で追加された譜面も起源マッピング群に混ざる（末尾に固まらない）。
+	// 出力整列: (mappingIdx 昇順, Position 昇順)。フェーズ 2 由来も起源マッピング群に混ぜる。
 	sort.SliceStable(picked, func(a, b int) bool {
 		if picked[a].mappingIdx != picked[b].mappingIdx {
 			return picked[a].mappingIdx < picked[b].mappingIdx
@@ -257,7 +258,6 @@ func (u *PickUseCase) pickLevel(
 		return picked[a].chart.Position < picked[b].chart.Position
 	})
 
-	// 出力前: PickedChart に包んで PublicLevel を併記する (Level はソース側のまま)。
 	out := make([]domain.PickedChart, 0, len(picked))
 	for _, p := range picked {
 		out = append(out, domain.PickedChart{EnrichedChart: p.chart, PublicLevel: lv.Name})

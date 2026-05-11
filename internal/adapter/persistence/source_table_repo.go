@@ -215,7 +215,11 @@ func (r *SourceTableRepoSQL) SaveFetched(
 	// マッピング編集 UI が「レベル選択肢ゼロ」になり機能停止する (両バグの fix)。
 	levelOrder := ft.Header.LevelOrder
 	if len(levelOrder) == 0 {
-		levelOrder = deriveLevelOrderFromCharts(ft.Charts)
+		raw := make([]string, 0, len(ft.Charts))
+		for _, c := range ft.Charts {
+			raw = append(raw, c.Level)
+		}
+		levelOrder = sortLevelsNatural(raw)
 	}
 	levelOrderJSON, err := json.Marshal(levelOrder)
 	if err != nil {
@@ -356,36 +360,36 @@ func scanEnrichedRows(rows *sql.Rows, sourceID string) ([]domain.EnrichedChart, 
 	return out, rows.Err()
 }
 
-// deriveLevelOrderFromCharts は charts から distinct level を自然順で並べる。
+// sortLevelsNatural は入力レベル列から空文字 / 重複を除き、自然順 (数値先 → 文字列) で並べる。
 // 数値解釈できるレベル（"1", "2", "1.5" 等）を数値昇順で先に置き、
 // 数値解釈できない文字列（"段位1", "?" 等）を文字列昇順で末尾に置く。
 // header.json に level_order が無いソース表（例: 一部の satellite/stella）に対して、
-// LevelOrder を意味のある値で埋めるために SaveFetched から呼ばれる。
-func deriveLevelOrderFromCharts(charts []domain.SourceChart) []string {
+// LevelOrder を意味のある値で埋めるために SaveFetched / BackfillEmptyLevelOrder から呼ばれる。
+func sortLevelsNatural(in []string) []string {
 	seen := map[string]struct{}{}
-	var levels []string
-	for _, c := range charts {
-		if c.Level == "" {
+	out := make([]string, 0, len(in))
+	for _, lv := range in {
+		if lv == "" {
 			continue
 		}
-		if _, ok := seen[c.Level]; ok {
+		if _, ok := seen[lv]; ok {
 			continue
 		}
-		seen[c.Level] = struct{}{}
-		levels = append(levels, c.Level)
+		seen[lv] = struct{}{}
+		out = append(out, lv)
 	}
-	sort.SliceStable(levels, func(i, j int) bool {
-		ai, aok := parseLevelNumeric(levels[i])
-		bj, bok := parseLevelNumeric(levels[j])
+	sort.SliceStable(out, func(i, j int) bool {
+		ai, aok := parseLevelNumeric(out[i])
+		bj, bok := parseLevelNumeric(out[j])
 		if aok != bok {
 			return aok // 数値解釈できる方が先
 		}
 		if aok && ai != bj {
 			return ai < bj
 		}
-		return levels[i] < levels[j]
+		return out[i] < out[j]
 	})
-	return levels
+	return out
 }
 
 func parseLevelNumeric(s string) (float64, bool) {
@@ -458,18 +462,18 @@ func (r *SourceTableRepoSQL) distinctChartLevels(ctx context.Context, sourceID s
 		return nil, err
 	}
 	defer rows.Close()
-	var charts []domain.SourceChart
+	var raw []string
 	for rows.Next() {
 		var lv string
 		if err := rows.Scan(&lv); err != nil {
 			return nil, err
 		}
-		charts = append(charts, domain.SourceChart{Level: lv})
+		raw = append(raw, lv)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	return deriveLevelOrderFromCharts(charts), nil
+	return sortLevelsNatural(raw), nil
 }
 
 // MarkFetchError は取得失敗を記録する。譜面行は触らない（前回成功時のキャッシュを保持）。

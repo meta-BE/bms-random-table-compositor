@@ -19,7 +19,6 @@ import {
   CreatePublishedTable,
   CreatePublishedTableFromSource,
   UpdatePublishedTable,
-  ApplyBulkPickConfig,
   DeletePublishedTable,
   ValidateSlug,
   SuggestSlugFromSource,
@@ -120,12 +119,6 @@ export interface CreateFromSourceRequest {
   slug: string;
   displayName: string;
   symbol: string;
-}
-
-export interface ApplyBulkPickConfigRequest {
-  id: string;
-  perMappingPick: number;
-  totalPick: number;
 }
 
 export type SlugValidation =
@@ -229,9 +222,6 @@ export const api = {
   },
   updatePublishedTable(req: UpdatePublishedTableRequest): Promise<void> {
     return UpdatePublishedTable(req as any);
-  },
-  applyBulkPickConfig(req: ApplyBulkPickConfigRequest): Promise<void> {
-    return ApplyBulkPickConfig(req as any);
   },
   deletePublishedTable(id: string): Promise<void> {
     return DeletePublishedTable(id);

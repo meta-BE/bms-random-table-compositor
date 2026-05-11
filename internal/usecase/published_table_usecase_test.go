@@ -268,7 +268,7 @@ func TestPublishedTableUseCase_Create_RejectsNegativePickPerLevel(t *testing.T) 
 			},
 		}},
 	})
-	require.True(t, errors.Is(err, usecase.ErrInvalidPickPerLevel))
+	require.True(t, errors.Is(err, usecase.ErrInvalidPickCount))
 }
 
 func TestPublishedTableUseCase_Create_DuplicateSlugFails(t *testing.T) {
@@ -405,24 +405,6 @@ func TestPublishedTableUseCase_CreateFromSourceTable_GeneratesLevelsAndMappings(
 	require.Len(t, got.Levels[0].Mappings, 1)
 	require.Equal(t, "01JSRC00000000000000040", got.Levels[0].Mappings[0].SourceTableID)
 	require.Equal(t, "0", got.Levels[0].Mappings[0].SourceLevel)
-}
-
-func TestPublishedTableUseCase_ApplyBulkPickConfig_OverwritesAllLevels(t *testing.T) {
-	src := newFakeSourceRepo()
-	seedSourceWithLevels(t, src, "01JSRC00000000000000041", "Stella", "", []string{"1", "2"})
-	uc, pubRepo := newPublishedUC(t, src)
-	id, err := uc.CreateFromSourceTable(context.Background(), "01JSRC00000000000000041", "stella", "S", "")
-	require.NoError(t, err)
-
-	require.NoError(t, uc.ApplyBulkPickConfig(context.Background(), id, 3, 7))
-
-	got, err := pubRepo.Get(context.Background(), id)
-	require.NoError(t, err)
-	require.Len(t, got.Levels, 2)
-	for _, lv := range got.Levels {
-		require.Equal(t, 3, lv.PerMappingPick)
-		require.Equal(t, 7, lv.TotalPick)
-	}
 }
 
 func TestPublishedTableUseCase_Create_RejectsDuplicateLevelNames(t *testing.T) {

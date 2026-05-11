@@ -85,13 +85,6 @@ type CreateFromSourceRequest struct {
 	Symbol        string `json:"symbol"`
 }
 
-// ApplyBulkPickConfigRequest は ApplyBulkPickConfig のリクエスト DTO。
-type ApplyBulkPickConfigRequest struct {
-	ID             string `json:"id"`
-	PerMappingPick int    `json:"perMappingPick"`
-	TotalPick      int    `json:"totalPick"`
-}
-
 // SlugValidationDTO は ValidateSlug の応答 DTO。
 type SlugValidationDTO struct {
 	OK     bool   `json:"ok"`
@@ -223,11 +216,6 @@ func (h *PublishedTableHandler) UpdatePublishedTable(req UpdatePublishedTableReq
 // CreatePublishedTableFromSource はソース表 1 件をテンプレに、各レベル 1:1 マッピングで公開表を作る。
 func (h *PublishedTableHandler) CreatePublishedTableFromSource(req CreateFromSourceRequest) (string, error) {
 	return h.uc.CreateFromSourceTable(h.ctx, req.SourceTableID, req.Slug, req.DisplayName, req.Symbol)
-}
-
-// ApplyBulkPickConfig は公開表内の全レベルへ (PerMappingPick, TotalPick) を一括適用する。
-func (h *PublishedTableHandler) ApplyBulkPickConfig(req ApplyBulkPickConfigRequest) error {
-	return h.uc.ApplyBulkPickConfig(h.ctx, req.ID, req.PerMappingPick, req.TotalPick)
 }
 
 // DeletePublishedTable は公開表を削除する。

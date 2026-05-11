@@ -180,26 +180,6 @@ func (u *PublishedTableUseCase) CreateFromSourceTable(ctx context.Context, sourc
 	})
 }
 
-// ApplyBulkPickConfig は公開表内の全レベルに同一の (m, n) を一括適用する。
-func (u *PublishedTableUseCase) ApplyBulkPickConfig(ctx context.Context, id string, m, n int) error {
-	if m < 0 || n < 0 {
-		return ErrInvalidPickPerLevel
-	}
-	pub, err := u.repo.Get(ctx, id)
-	if err != nil {
-		return err
-	}
-	for i := range pub.Levels {
-		pub.Levels[i].PerMappingPick = m
-		pub.Levels[i].TotalPick = n
-	}
-	if err := u.repo.Update(ctx, pub); err != nil {
-		return err
-	}
-	u.log.Info("bulk pick config applied", "id", id, "m", m, "n", n)
-	return nil
-}
-
 // ValidateSlug は slug の形式 / 予約語 / 重複を検査する（GUI のリアルタイム判定用）。
 func (u *PublishedTableUseCase) ValidateSlug(ctx context.Context, slug string, excludeID string) error {
 	if err := validateSlugFormat(slug); err != nil {
@@ -245,7 +225,9 @@ func (u *PublishedTableUseCase) SuggestSlugFromSource(ctx context.Context, sourc
 // buildLevelsFromInput は Input から domain 型への変換 + バリデーションを行う。
 // pubID が決まっていれば Levels.PublishedTableID を埋めて返す。
 // 各 Level / Mapping には新規 ID を採番する。
+// ソース表の存在確認は出現する全 source_table_id について 1 回ずつだけ行う。
 func (u *PublishedTableUseCase) buildLevelsFromInput(ctx context.Context, inputs []PublishedTableLevelInput, pubID string) ([]domain.PublishedTableLevel, error) {
+	checkedSource := map[string]struct{}{}
 	seenName := map[string]struct{}{}
 	out := make([]domain.PublishedTableLevel, 0, len(inputs))
 	for i, lin := range inputs {
@@ -258,13 +240,16 @@ func (u *PublishedTableUseCase) buildLevelsFromInput(ctx context.Context, inputs
 		}
 		seenName[name] = struct{}{}
 		if lin.PerMappingPick < 0 || lin.TotalPick < 0 {
-			return nil, ErrInvalidPickPerLevel
+			return nil, ErrInvalidPickCount
 		}
 		seenMap := map[string]struct{}{}
 		ms := make([]domain.PublishedTableLevelMapping, 0, len(lin.Mappings))
 		for j, mp := range lin.Mappings {
-			if _, err := u.srcRepo.Get(ctx, mp.SourceTableID); err != nil {
-				return nil, ErrSourceTableNotFound
+			if _, ok := checkedSource[mp.SourceTableID]; !ok {
+				if _, err := u.srcRepo.Get(ctx, mp.SourceTableID); err != nil {
+					return nil, ErrSourceTableNotFound
+				}
+				checkedSource[mp.SourceTableID] = struct{}{}
 			}
 			key := mp.SourceTableID + "\x00" + mp.SourceLevel
 			if _, dup := seenMap[key]; dup {
@@ -297,20 +282,13 @@ func (u *PublishedTableUseCase) buildLevelsFromInput(ctx context.Context, inputs
 
 // validateBasic は slug / RefreshMode / 重複検査の共通部分。
 func (u *PublishedTableUseCase) validateBasic(ctx context.Context, slug, excludeID string, mode domain.RefreshMode) error {
-	if err := validateSlugFormat(slug); err != nil {
+	if err := u.ValidateSlug(ctx, slug, excludeID); err != nil {
 		return err
 	}
 	switch mode {
 	case domain.RefreshModePerRequest, domain.RefreshModeDaily, domain.RefreshModeManual:
 	default:
 		return ErrInvalidRefreshMode
-	}
-	exists, err := u.repo.SlugExists(ctx, slug, excludeID)
-	if err != nil {
-		return err
-	}
-	if exists {
-		return ErrSlugDuplicated
 	}
 	return nil
 }

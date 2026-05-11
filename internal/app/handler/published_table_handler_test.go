@@ -136,30 +136,3 @@ func TestPublishedTableHandler_CreatePublishedTableFromSource(t *testing.T) {
 	require.Equal(t, "SRC1", got.Levels[0].Mappings[0].SourceTableID)
 	require.Equal(t, "1", got.Levels[0].Mappings[0].SourceLevel)
 }
-
-func TestPublishedTableHandler_ApplyBulkPickConfig(t *testing.T) {
-	h, src := setupPublishedTableHandler(t)
-	_, err := src.Create(context.Background(), domain.SourceTable{
-		ID: "SRC1", InputURL: "https://x", InputKind: domain.InputKindHTML,
-		LevelOrder:      []string{"1", "2"},
-		LastFetchStatus: domain.FetchStatusOK,
-	})
-	require.NoError(t, err)
-	id, err := h.CreatePublishedTableFromSource(handler.CreateFromSourceRequest{
-		SourceTableID: "SRC1",
-		Slug:          "stella", DisplayName: "S", Symbol: "★",
-	})
-	require.NoError(t, err)
-
-	require.NoError(t, h.ApplyBulkPickConfig(handler.ApplyBulkPickConfigRequest{
-		ID: id, PerMappingPick: 3, TotalPick: 7,
-	}))
-
-	got, err := h.GetPublishedTable(id)
-	require.NoError(t, err)
-	require.NotEmpty(t, got.Levels)
-	for _, lv := range got.Levels {
-		require.Equal(t, 3, lv.PerMappingPick)
-		require.Equal(t, 7, lv.TotalPick)
-	}
-}
