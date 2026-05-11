@@ -110,6 +110,81 @@ func TestPublishedTableHandler_ValidateSlug(t *testing.T) {
 	require.True(t, h.ValidateSlug("taken", id).OK, "自分自身を除外すれば OK")
 }
 
+// WeightMode 系のテスト共通セットアップ: SRC1 (レベル 1) を 1 件作成して h を返す。
+func setupForWeightModeTest(t *testing.T) *handler.PublishedTableHandler {
+	t.Helper()
+	h, src := setupPublishedTableHandler(t)
+	_, err := src.Create(context.Background(), domain.SourceTable{
+		ID: "SRC1", InputURL: "https://x", InputKind: domain.InputKindHTML,
+		LevelOrder:      []string{"1"},
+		LastFetchStatus: domain.FetchStatusOK,
+	})
+	require.NoError(t, err)
+	return h
+}
+
+func newWeightModeCreateRequest(slug string, weightMode string, weightParamX int) handler.CreatePublishedTableRequest {
+	return handler.CreatePublishedTableRequest{
+		Slug: slug, DisplayName: "X", Symbol: "★",
+		RefreshMode:  "manual",
+		WeightMode:   weightMode,
+		WeightParamX: weightParamX,
+		Levels: []handler.PublishedTableLevelInputDTO{
+			{
+				Name: "1", PerMappingPick: 0, TotalPick: 0,
+				Mappings: []handler.PublishedTableLevelMappingInputDTO{
+					{SourceTableID: "SRC1", SourceLevel: "1"},
+				},
+			},
+		},
+	}
+}
+
+// probability モードで X が上限超過の場合は受け付けない。
+func TestPublishedTableHandler_Create_RejectsWeightParamOutOfRange(t *testing.T) {
+	h := setupForWeightModeTest(t)
+	_, err := h.CreatePublishedTable(newWeightModeCreateRequest("x", "probability", 10001))
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "10000")
+}
+
+// probability モードで X が下限未満 (2 未満) の場合も受け付けない。
+func TestPublishedTableHandler_Create_RejectsWeightParamBelowMin(t *testing.T) {
+	h := setupForWeightModeTest(t)
+	_, err := h.CreatePublishedTable(newWeightModeCreateRequest("y", "probability", 1))
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "範囲")
+}
+
+// sort モード時は X 範囲外でも受け付ける (probability 時のみ厳密)。
+func TestPublishedTableHandler_Create_AcceptsWeightSort(t *testing.T) {
+	h := setupForWeightModeTest(t)
+	id, err := h.CreatePublishedTable(newWeightModeCreateRequest("x2", "sort", 10))
+	require.NoError(t, err)
+	got, err := h.GetPublishedTable(id)
+	require.NoError(t, err)
+	require.Equal(t, "sort", got.WeightMode)
+}
+
+// WeightMode 未指定時は "off" にフォールバックする。
+func TestPublishedTableHandler_Create_DefaultsToOff(t *testing.T) {
+	h := setupForWeightModeTest(t)
+	id, err := h.CreatePublishedTable(newWeightModeCreateRequest("x3", "", 0))
+	require.NoError(t, err)
+	got, err := h.GetPublishedTable(id)
+	require.NoError(t, err)
+	require.Equal(t, "off", got.WeightMode)
+	// WeightParamX も既定値 10 にフォールバック。
+	require.Equal(t, 10, got.WeightParamX)
+}
+
+// 未知の WeightMode 値はエラーとする。
+func TestPublishedTableHandler_Create_RejectsUnknownWeightMode(t *testing.T) {
+	h := setupForWeightModeTest(t)
+	_, err := h.CreatePublishedTable(newWeightModeCreateRequest("x4", "bogus", 10))
+	require.Error(t, err)
+}
+
 func TestPublishedTableHandler_CreatePublishedTableFromSource(t *testing.T) {
 	h, src := setupPublishedTableHandler(t)
 	_, err := src.Create(context.Background(), domain.SourceTable{

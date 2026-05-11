@@ -62,24 +62,28 @@ type PublishedTableLevelMappingInput struct {
 
 // CreatePublishedTableInput は Create が受け取る入力。
 type CreatePublishedTableInput struct {
-	Slug        string
-	DisplayName string
-	Symbol      string
-	OwnedOnly   bool
-	RefreshMode domain.RefreshMode
-	Levels      []PublishedTableLevelInput
+	Slug         string
+	DisplayName  string
+	Symbol       string
+	OwnedOnly    bool
+	RefreshMode  domain.RefreshMode
+	WeightMode   domain.WeightMode
+	WeightParamX int
+	Levels       []PublishedTableLevelInput
 }
 
 // UpdatePublishedTableInput は Update が受け取る入力。
 type UpdatePublishedTableInput struct {
-	ID          string
-	Slug        string
-	DisplayName string
-	Symbol      string
-	OwnedOnly   bool
-	RefreshMode domain.RefreshMode
-	SortOrder   int
-	Levels      []PublishedTableLevelInput
+	ID           string
+	Slug         string
+	DisplayName  string
+	Symbol       string
+	OwnedOnly    bool
+	RefreshMode  domain.RefreshMode
+	WeightMode   domain.WeightMode
+	WeightParamX int
+	SortOrder    int
+	Levels       []PublishedTableLevelInput
 }
 
 // List は全公開表を返す。
@@ -108,8 +112,12 @@ func (u *PublishedTableUseCase) Create(ctx context.Context, in CreatePublishedTa
 	t := domain.PublishedTable{
 		ID: id, Slug: in.Slug, DisplayName: in.DisplayName, Symbol: in.Symbol,
 		OwnedOnly: in.OwnedOnly,
-		Pick:      domain.PickConfig{RefreshMode: in.RefreshMode},
-		Levels:    levels,
+		Pick: domain.PickConfig{
+			RefreshMode:  in.RefreshMode,
+			WeightMode:   in.WeightMode,
+			WeightParamX: in.WeightParamX,
+		},
+		Levels: levels,
 	}
 	out, err := u.repo.Create(ctx, t)
 	if err != nil {
@@ -137,7 +145,11 @@ func (u *PublishedTableUseCase) Update(ctx context.Context, in UpdatePublishedTa
 	t := domain.PublishedTable{
 		ID: in.ID, Slug: in.Slug, DisplayName: in.DisplayName, Symbol: in.Symbol,
 		OwnedOnly: in.OwnedOnly,
-		Pick:      domain.PickConfig{RefreshMode: in.RefreshMode},
+		Pick: domain.PickConfig{
+			RefreshMode:  in.RefreshMode,
+			WeightMode:   in.WeightMode,
+			WeightParamX: in.WeightParamX,
+		},
 		SortOrder: in.SortOrder,
 		Levels:    levels,
 	}

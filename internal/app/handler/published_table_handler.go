@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strconv"
 
 	"github.com/meta-BE/bms-random-table-compositor/internal/domain"
@@ -31,14 +32,16 @@ type PublishedTableLevelMappingDTO struct {
 // PublishedTableDTO はフロントエンドに返す公開表本体の JSON 構造体。
 // Levels は List では空配列、Get では実体込みで返す。
 type PublishedTableDTO struct {
-	ID          string                   `json:"id"`
-	Slug        string                   `json:"slug"`
-	DisplayName string                   `json:"displayName"`
-	Symbol      string                   `json:"symbol"`
-	OwnedOnly   bool                     `json:"ownedOnly"`
-	RefreshMode string                   `json:"refreshMode"`
-	SortOrder   int                      `json:"sortOrder"`
-	Levels      []PublishedTableLevelDTO `json:"levels"`
+	ID           string                   `json:"id"`
+	Slug         string                   `json:"slug"`
+	DisplayName  string                   `json:"displayName"`
+	Symbol       string                   `json:"symbol"`
+	OwnedOnly    bool                     `json:"ownedOnly"`
+	RefreshMode  string                   `json:"refreshMode"`
+	WeightMode   string                   `json:"weightMode"`
+	WeightParamX int                      `json:"weightParamX"`
+	SortOrder    int                      `json:"sortOrder"`
+	Levels       []PublishedTableLevelDTO `json:"levels"`
 }
 
 // PublishedTableLevelInputDTO は Create / Update リクエストで受け取る公開レベル入力。
@@ -57,24 +60,28 @@ type PublishedTableLevelMappingInputDTO struct {
 
 // CreatePublishedTableRequest は CreatePublishedTable のリクエスト DTO。
 type CreatePublishedTableRequest struct {
-	Slug        string                        `json:"slug"`
-	DisplayName string                        `json:"displayName"`
-	Symbol      string                        `json:"symbol"`
-	OwnedOnly   bool                          `json:"ownedOnly"`
-	RefreshMode string                        `json:"refreshMode"`
-	Levels      []PublishedTableLevelInputDTO `json:"levels"`
+	Slug         string                        `json:"slug"`
+	DisplayName  string                        `json:"displayName"`
+	Symbol       string                        `json:"symbol"`
+	OwnedOnly    bool                          `json:"ownedOnly"`
+	RefreshMode  string                        `json:"refreshMode"`
+	WeightMode   string                        `json:"weightMode"`
+	WeightParamX int                           `json:"weightParamX"`
+	Levels       []PublishedTableLevelInputDTO `json:"levels"`
 }
 
 // UpdatePublishedTableRequest は UpdatePublishedTable のリクエスト DTO。
 type UpdatePublishedTableRequest struct {
-	ID          string                        `json:"id"`
-	Slug        string                        `json:"slug"`
-	DisplayName string                        `json:"displayName"`
-	Symbol      string                        `json:"symbol"`
-	OwnedOnly   bool                          `json:"ownedOnly"`
-	RefreshMode string                        `json:"refreshMode"`
-	SortOrder   int                           `json:"sortOrder"`
-	Levels      []PublishedTableLevelInputDTO `json:"levels"`
+	ID           string                        `json:"id"`
+	Slug         string                        `json:"slug"`
+	DisplayName  string                        `json:"displayName"`
+	Symbol       string                        `json:"symbol"`
+	OwnedOnly    bool                          `json:"ownedOnly"`
+	RefreshMode  string                        `json:"refreshMode"`
+	WeightMode   string                        `json:"weightMode"`
+	WeightParamX int                           `json:"weightParamX"`
+	SortOrder    int                           `json:"sortOrder"`
+	Levels       []PublishedTableLevelInputDTO `json:"levels"`
 }
 
 // CreateFromSourceRequest は CreatePublishedTableFromSource のリクエスト DTO。
@@ -109,10 +116,12 @@ func (h *PublishedTableHandler) SetContext(ctx context.Context) { h.ctx = ctx }
 func toPublishedTableDTO(t domain.PublishedTable) PublishedTableDTO {
 	return PublishedTableDTO{
 		ID: t.ID, Slug: t.Slug, DisplayName: t.DisplayName, Symbol: t.Symbol,
-		OwnedOnly:   t.OwnedOnly,
-		RefreshMode: string(t.Pick.RefreshMode),
-		SortOrder:   t.SortOrder,
-		Levels:      []PublishedTableLevelDTO{},
+		OwnedOnly:    t.OwnedOnly,
+		RefreshMode:  string(t.Pick.RefreshMode),
+		WeightMode:   string(t.Pick.WeightMode),
+		WeightParamX: t.Pick.WeightParamX,
+		SortOrder:    t.SortOrder,
+		Levels:       []PublishedTableLevelDTO{},
 	}
 }
 
@@ -140,6 +149,30 @@ func toPublishedTableDTOWithLevels(t domain.PublishedTable) PublishedTableDTO {
 		})
 	}
 	return out
+}
+
+// normalizeWeightConfig は DTO の WeightMode / WeightParamX を正規化・検証する。
+// 既定値: WeightMode は空文字なら "off"、WeightParamX は 0 なら 10。
+// probability モードでのみ X ∈ [2, 10000] を厳密にチェックする (sort / off では緩める)。
+func normalizeWeightConfig(modeStr string, x int) (domain.WeightMode, int, error) {
+	mode := domain.WeightMode(modeStr)
+	if mode == "" {
+		mode = domain.WeightModeOff
+	}
+	switch mode {
+	case domain.WeightModeOff, domain.WeightModeProbability, domain.WeightModeSort:
+	default:
+		return "", 0, fmt.Errorf("weight_mode が不正です: %q", modeStr)
+	}
+	if x == 0 {
+		x = 10
+	}
+	if mode == domain.WeightModeProbability {
+		if x < 2 || x > 10000 {
+			return "", 0, fmt.Errorf("weight_param_x は 2〜10000 の範囲で指定してください (got %d)", x)
+		}
+	}
+	return mode, x, nil
 }
 
 // toLevelInputs は DTO 入力を usecase 入力へ変換する。
@@ -187,28 +220,40 @@ func (h *PublishedTableHandler) GetPublishedTable(id string) (PublishedTableDTO,
 
 // CreatePublishedTable は新規公開表を作成し、ID を返す。
 func (h *PublishedTableHandler) CreatePublishedTable(req CreatePublishedTableRequest) (string, error) {
+	mode, x, err := normalizeWeightConfig(req.WeightMode, req.WeightParamX)
+	if err != nil {
+		return "", err
+	}
 	in := usecase.CreatePublishedTableInput{
-		Slug:        req.Slug,
-		DisplayName: req.DisplayName,
-		Symbol:      req.Symbol,
-		OwnedOnly:   req.OwnedOnly,
-		RefreshMode: domain.RefreshMode(req.RefreshMode),
-		Levels:      toLevelInputs(req.Levels),
+		Slug:         req.Slug,
+		DisplayName:  req.DisplayName,
+		Symbol:       req.Symbol,
+		OwnedOnly:    req.OwnedOnly,
+		RefreshMode:  domain.RefreshMode(req.RefreshMode),
+		WeightMode:   mode,
+		WeightParamX: x,
+		Levels:       toLevelInputs(req.Levels),
 	}
 	return h.uc.Create(h.ctx, in)
 }
 
 // UpdatePublishedTable は公開表を更新する。
 func (h *PublishedTableHandler) UpdatePublishedTable(req UpdatePublishedTableRequest) error {
+	mode, x, err := normalizeWeightConfig(req.WeightMode, req.WeightParamX)
+	if err != nil {
+		return err
+	}
 	in := usecase.UpdatePublishedTableInput{
-		ID:          req.ID,
-		Slug:        req.Slug,
-		DisplayName: req.DisplayName,
-		Symbol:      req.Symbol,
-		OwnedOnly:   req.OwnedOnly,
-		RefreshMode: domain.RefreshMode(req.RefreshMode),
-		SortOrder:   req.SortOrder,
-		Levels:      toLevelInputs(req.Levels),
+		ID:           req.ID,
+		Slug:         req.Slug,
+		DisplayName:  req.DisplayName,
+		Symbol:       req.Symbol,
+		OwnedOnly:    req.OwnedOnly,
+		RefreshMode:  domain.RefreshMode(req.RefreshMode),
+		WeightMode:   mode,
+		WeightParamX: x,
+		SortOrder:    req.SortOrder,
+		Levels:       toLevelInputs(req.Levels),
 	}
 	return h.uc.Update(h.ctx, in)
 }
