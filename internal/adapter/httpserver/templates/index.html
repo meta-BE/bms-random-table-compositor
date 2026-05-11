@@ -29,6 +29,7 @@ tr.unowned td { color: #999; }
 <body>
   <h1>{{.Symbol}} {{.DisplayName}}</h1>
   <div class="meta">生成: {{.GeneratedAt}} / 全 {{.TotalCount}} 曲</div>
+  <div class="meta">{{.PickSummary}}</div>
   {{if .IsManualMode}}
   <form class="refresh" method="POST" action="/{{.Slug}}/_refresh">
     <button type="submit">再ピック</button>

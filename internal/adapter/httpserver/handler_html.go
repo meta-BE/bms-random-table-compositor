@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/meta-BE/bms-random-table-compositor/internal/domain"
@@ -16,6 +17,7 @@ type htmlPageData struct {
 	DisplayName  string
 	Symbol       string
 	GeneratedAt  string
+	PickSummary  string
 	TotalCount   int
 	IsManualMode bool
 	Levels       []htmlLevel
@@ -111,9 +113,53 @@ func buildHTMLPageData(pub domain.PublishedTable, r domain.PickResult) htmlPageD
 		DisplayName:  pub.DisplayName,
 		Symbol:       pub.Symbol,
 		GeneratedAt:  r.GeneratedAt.Local().Format("2006-01-02 15:04:05 MST"),
+		PickSummary:  formatPickSummary(pub),
 		TotalCount:   len(r.Charts),
 		IsManualMode: pub.Pick.RefreshMode == domain.RefreshModeManual,
 		Levels:       levels,
+	}
+}
+
+// formatPickSummary はピック設定を 1 行の人間可読サマリに整形する。
+// 例: "更新: 毎日 / 重み付け: 古い曲ほど優先 (確率 X=10) / 所持限定"
+// OwnedOnly=false のときは「所持限定」セグメントを省略する。
+func formatPickSummary(pub domain.PublishedTable) string {
+	parts := []string{
+		"更新: " + refreshModeLabel(pub.Pick.RefreshMode),
+		"重み付け: " + weightModeLabel(pub.Pick.WeightMode, pub.Pick.WeightParamX),
+	}
+	if pub.OwnedOnly {
+		parts = append(parts, "所持限定")
+	}
+	return strings.Join(parts, " / ")
+}
+
+func refreshModeLabel(m domain.RefreshMode) string {
+	switch m {
+	case domain.RefreshModeDaily:
+		return "毎日"
+	case domain.RefreshModeManual:
+		return "手動"
+	case domain.RefreshModePerRequest:
+		return "リクエスト毎"
+	default:
+		return string(m)
+	}
+}
+
+func weightModeLabel(m domain.WeightMode, x int) string {
+	switch m {
+	case domain.WeightModeProbability:
+		return fmt.Sprintf("古い曲ほど優先 (確率 X=%d)", x)
+	case domain.WeightModeSort:
+		return "最終プレイが古い順"
+	case domain.WeightModeOff:
+		return "重み付けなし"
+	default:
+		if m == "" {
+			return "重み付けなし"
+		}
+		return string(m)
 	}
 }
 

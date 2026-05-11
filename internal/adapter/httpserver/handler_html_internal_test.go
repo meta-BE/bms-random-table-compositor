@@ -76,3 +76,54 @@ func TestBuildHTMLPageData_LastPlayed_Recent(t *testing.T) {
 	data := buildHTMLPageData(pub, r)
 	require.Equal(t, "3日前", data.Levels[0].Charts[0].LastPlayed)
 }
+
+// TestFormatPickSummary は更新タイミング・重み付け・所持限定の組み合わせを網羅。
+func TestFormatPickSummary(t *testing.T) {
+	cases := []struct {
+		name string
+		pub  domain.PublishedTable
+		want string
+	}{
+		{
+			name: "daily + probability + owned",
+			pub: domain.PublishedTable{
+				OwnedOnly: true,
+				Pick: domain.PickConfig{
+					RefreshMode: domain.RefreshModeDaily, WeightMode: domain.WeightModeProbability, WeightParamX: 10,
+				},
+			},
+			want: "更新: 毎日 / 重み付け: 古い曲ほど優先 (確率 X=10) / 所持限定",
+		},
+		{
+			name: "per_request + off + not owned",
+			pub: domain.PublishedTable{
+				Pick: domain.PickConfig{
+					RefreshMode: domain.RefreshModePerRequest, WeightMode: domain.WeightModeOff,
+				},
+			},
+			want: "更新: リクエスト毎 / 重み付け: 重み付けなし",
+		},
+		{
+			name: "manual + sort + owned",
+			pub: domain.PublishedTable{
+				OwnedOnly: true,
+				Pick: domain.PickConfig{
+					RefreshMode: domain.RefreshModeManual, WeightMode: domain.WeightModeSort,
+				},
+			},
+			want: "更新: 手動 / 重み付け: 最終プレイが古い順 / 所持限定",
+		},
+		{
+			name: "empty WeightMode は off 扱い",
+			pub: domain.PublishedTable{
+				Pick: domain.PickConfig{RefreshMode: domain.RefreshModeDaily},
+			},
+			want: "更新: 毎日 / 重み付け: 重み付けなし",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			require.Equal(t, c.want, formatPickSummary(c.pub))
+		})
+	}
+}
