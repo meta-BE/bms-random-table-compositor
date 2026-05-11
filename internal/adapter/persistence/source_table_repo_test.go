@@ -35,7 +35,7 @@ func setupSourceTableRepoWithDB(t *testing.T) (*persistence.SourceTableRepoSQL, 
 	require.NoError(t, persistence.RunMigrations(db))
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	attacher := persistence.NewSongdataAttacher(db, clock.System{}, logger)
-	return persistence.NewSourceTableRepoSQL(db, attacher), db
+	return persistence.NewSourceTableRepoSQL(db, attacher, nil), db
 }
 
 func TestSourceTableRepoSQL_CreateThenGet(t *testing.T) {
@@ -418,4 +418,121 @@ func TestSourceTableRepoSQL_BackfillEmptyLevelOrder_FillsEmptyFromCharts(t *test
 	n2, err := repo.BackfillEmptyLevelOrder(ctx)
 	require.NoError(t, err)
 	require.Equal(t, 0, n2)
+}
+
+// makeScoreDBFileForTest はテスト用に最小限の score テーブルを持つ DB を作る
+// (persistence パッケージ内の同名ヘルパは unexported のためここで再現する)。
+func makeScoreDBFileForTest(t *testing.T, path string, rows [][2]any) {
+	t.Helper()
+	db, err := persistence.OpenDB(path)
+	require.NoError(t, err)
+	defer db.Close()
+	_, err = db.Exec(`CREATE TABLE score (sha256 TEXT NOT NULL, mode INTEGER, date INTEGER, PRIMARY KEY(sha256, mode))`)
+	require.NoError(t, err)
+	for _, r := range rows {
+		_, err = db.Exec(`INSERT INTO score(sha256, mode, date) VALUES(?, 0, ?)`, r[0], r[1])
+		require.NoError(t, err)
+	}
+}
+
+func TestLoadCharts_LastPlayedAt_WithScoreAttached(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+
+	mainPath := filepath.Join(dir, "main.db")
+	mainDB, err := persistence.OpenDB(mainPath)
+	require.NoError(t, err)
+	defer mainDB.Close()
+	mainDB.SetMaxOpenConns(1)
+	require.NoError(t, persistence.RunMigrations(mainDB))
+
+	songPath := filepath.Join(dir, "songdata.db")
+	{
+		songDB, err := persistence.OpenDB(songPath)
+		require.NoError(t, err)
+		_, err = songDB.Exec(`CREATE TABLE song (md5 TEXT NOT NULL, sha256 TEXT NOT NULL, PRIMARY KEY(md5))`)
+		require.NoError(t, err)
+		_, err = songDB.Exec(`INSERT INTO song(md5, sha256) VALUES('md-a','sha-a'),('md-b','sha-b')`)
+		require.NoError(t, err)
+		songDB.Close()
+	}
+
+	scorePath := filepath.Join(dir, "score.db")
+	makeScoreDBFileForTest(t, scorePath, [][2]any{{"sha-a", 1700000000}})
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	songAtt := persistence.NewSongdataAttacher(mainDB, clock.System{}, logger)
+	require.NoError(t, songAtt.Attach(ctx, songPath))
+	scoreAtt := persistence.NewScoreDBAttacher(mainDB, clock.System{}, logger)
+	require.NoError(t, scoreAtt.Attach(ctx, scorePath))
+
+	repo := persistence.NewSourceTableRepoSQL(mainDB, songAtt, scoreAtt)
+
+	_, err = repo.Create(ctx, domain.SourceTable{
+		ID: "src1", InputURL: "http://x", InputKind: domain.InputKindHTML,
+		LastFetchStatus: domain.FetchStatusOK,
+	})
+	require.NoError(t, err)
+	require.NoError(t, repo.SaveFetched(ctx, "src1", port.FetchedTable{
+		Header: domain.BMSTableHeader{Name: "t"},
+		Charts: []domain.SourceChart{
+			{SourceID: "src1", Position: 1, MD5: "md-a", SHA256: "sha-a", Level: "0"},
+			{SourceID: "src1", Position: 2, MD5: "md-b", SHA256: "sha-b", Level: "0"},
+		},
+	}, time.Now()))
+
+	charts, err := repo.LoadCharts(ctx, "src1", port.ChartQuery{})
+	require.NoError(t, err)
+	require.Len(t, charts, 2)
+
+	byMD5 := map[string]domain.EnrichedChart{}
+	for _, c := range charts {
+		byMD5[c.MD5] = c
+	}
+	require.NotNil(t, byMD5["md-a"].LastPlayedAt)
+	require.Equal(t, int64(1700000000), byMD5["md-a"].LastPlayedAt.Unix())
+	require.Nil(t, byMD5["md-b"].LastPlayedAt, "未プレイは nil")
+}
+
+func TestLoadCharts_LastPlayedAt_WithoutScoreAttached(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	mainPath := filepath.Join(dir, "main.db")
+	mainDB, err := persistence.OpenDB(mainPath)
+	require.NoError(t, err)
+	defer mainDB.Close()
+	mainDB.SetMaxOpenConns(1)
+	require.NoError(t, persistence.RunMigrations(mainDB))
+
+	songPath := filepath.Join(dir, "songdata.db")
+	{
+		songDB, err := persistence.OpenDB(songPath)
+		require.NoError(t, err)
+		_, err = songDB.Exec(`CREATE TABLE song (md5 TEXT NOT NULL, sha256 TEXT NOT NULL, PRIMARY KEY(md5))`)
+		require.NoError(t, err)
+		_, err = songDB.Exec(`INSERT INTO song(md5, sha256) VALUES('md-a','sha-a')`)
+		require.NoError(t, err)
+		songDB.Close()
+	}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	songAtt := persistence.NewSongdataAttacher(mainDB, clock.System{}, logger)
+	require.NoError(t, songAtt.Attach(ctx, songPath))
+
+	repo := persistence.NewSourceTableRepoSQL(mainDB, songAtt, nil) // score.db 未設定
+	_, err = repo.Create(ctx, domain.SourceTable{
+		ID: "src1", InputURL: "http://x", InputKind: domain.InputKindHTML,
+		LastFetchStatus: domain.FetchStatusOK,
+	})
+	require.NoError(t, err)
+	require.NoError(t, repo.SaveFetched(ctx, "src1", port.FetchedTable{
+		Header: domain.BMSTableHeader{Name: "t"},
+		Charts: []domain.SourceChart{
+			{SourceID: "src1", Position: 1, MD5: "md-a", SHA256: "sha-a", Level: "0"},
+		},
+	}, time.Now()))
+
+	charts, err := repo.LoadCharts(ctx, "src1", port.ChartQuery{})
+	require.NoError(t, err)
+	require.Len(t, charts, 1)
+	require.Nil(t, charts[0].LastPlayedAt, "score 未 attach 時は常に nil")
 }

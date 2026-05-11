@@ -25,7 +25,7 @@ func setupPublishedTableRepo(t *testing.T) (*persistence.PublishedTableRepoSQL, 
 	require.NoError(t, persistence.RunMigrations(db))
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	attacher := persistence.NewSongdataAttacher(db, clock.System{}, logger)
-	return persistence.NewPublishedTableRepoSQL(db), persistence.NewSourceTableRepoSQL(db, attacher)
+	return persistence.NewPublishedTableRepoSQL(db), persistence.NewSourceTableRepoSQL(db, attacher, nil)
 }
 
 func seedSourceTable(t *testing.T, src *persistence.SourceTableRepoSQL, id string) {

@@ -84,7 +84,7 @@ func Bootstrap() (*Services, error) {
 
 	systemClock := clock.System{}
 	sourceAttacher := persistence.NewSongdataAttacher(db, systemClock, lg)
-	sourceRepo := persistence.NewSourceTableRepoSQL(db, sourceAttacher)
+	sourceRepo := persistence.NewSourceTableRepoSQL(db, sourceAttacher, nil)
 
 	// 既存ソース表で level_order_json が空のものを charts から自動補完する。
 	// header.json に level_order を含まない BMS 表 (例: 一部の satellite/stella) で、

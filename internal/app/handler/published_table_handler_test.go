@@ -26,7 +26,7 @@ func setupPublishedTableHandler(t *testing.T) (*handler.PublishedTableHandler, *
 	require.NoError(t, persistence.RunMigrations(db))
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	attacher := persistence.NewSongdataAttacher(db, clock.System{}, logger)
-	src := persistence.NewSourceTableRepoSQL(db, attacher)
+	src := persistence.NewSourceTableRepoSQL(db, attacher, nil)
 	pub := persistence.NewPublishedTableRepoSQL(db)
 	uc := usecase.NewPublishedTableUseCase(pub, src, idgen.NewULID(), logger)
 	h := handler.NewPublishedTableHandler(uc)

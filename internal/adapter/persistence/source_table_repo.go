@@ -16,14 +16,17 @@ import (
 
 // SourceTableRepoSQL は source_table / source_table_chart を扱う port.SourceTableRepo の実装。
 type SourceTableRepoSQL struct {
-	db       *sql.DB
-	attacher *SongdataAttacher
+	db            *sql.DB
+	attacher      *SongdataAttacher
+	scoreAttacher *ScoreDBAttacher
 }
 
 // NewSourceTableRepoSQL は新しい SourceTableRepoSQL を作る。
 // attacher 経由で songdata.db のアタッチ状態を見て LoadCharts の SQL を切り替える。
-func NewSourceTableRepoSQL(db *sql.DB, attacher *SongdataAttacher) *SourceTableRepoSQL {
-	return &SourceTableRepoSQL{db: db, attacher: attacher}
+// scoreAttacher は nil 可 (起動時に score.db が未設定でも動作)。設定済みなら
+// LoadCharts の SQL に sc.score 由来の last_played_at を含める。
+func NewSourceTableRepoSQL(db *sql.DB, attacher *SongdataAttacher, scoreAttacher *ScoreDBAttacher) *SourceTableRepoSQL {
+	return &SourceTableRepoSQL{db: db, attacher: attacher, scoreAttacher: scoreAttacher}
 }
 
 // Create は SourceTable を新規挿入し、ID を返す。
@@ -273,7 +276,8 @@ func (r *SourceTableRepoSQL) SaveFetched(
 // SongdataAttacher が sd をアタッチ済みなら IsOwned を EXISTS sd.song で計算する。
 // 未アタッチ時は IsOwned=false で返し、q.OwnedOnly=true なら空配列を返す
 // (spec: DB 未設定時は owned_only の表は 0 件)。
-// LastPlayedAt は今回 NULL 固定 (v2 で sd.score を見る形に拡張する)。
+// ScoreDBAttacher が sc をアタッチ済みなら、sha256 ごとの最新 sc.score.date を
+// last_played_at として埋める (date=0 / 未存在は nil)。
 func (r *SourceTableRepoSQL) LoadCharts(
 	ctx context.Context, sourceID string, q port.ChartQuery,
 ) ([]domain.EnrichedChart, error) {
@@ -293,18 +297,27 @@ func (r *SourceTableRepoSQL) loadChartsAttached(
 	if q.OwnedOnly {
 		ownedFlag = 1
 	}
-	rows, err := r.db.QueryContext(ctx, `
+	scoreAttached := r.scoreAttacher != nil && r.scoreAttacher.IsAttached()
+
+	lastPlayedExpr := "NULL"
+	if scoreAttached {
+		// mode をまたいで sha256 ごとの最新 date を取る。date=0 / 未存在は NULL に。
+		lastPlayedExpr = `(SELECT MAX(sc.date) FROM sc.score sc
+		                    WHERE sc.sha256 = c.sha256 AND sc.date > 0)`
+	}
+
+	query := fmt.Sprintf(`
 		SELECT
 		  c.position, t.symbol, c.md5, c.sha256, c.level, c.title, c.artist, c.raw_json,
-		  EXISTS(SELECT 1 FROM sd.song s WHERE s.md5 = c.md5)        AS is_owned,
-		  NULL                                                        AS last_played_at
+		  EXISTS(SELECT 1 FROM sd.song s WHERE s.md5 = c.md5) AS is_owned,
+		  %s AS last_played_at
 		FROM source_table_chart c
 		JOIN source_table t ON t.id = c.source_id
 		WHERE c.source_id = ?
 		  AND (? = 0 OR EXISTS (SELECT 1 FROM sd.song s WHERE s.md5 = c.md5))
-		ORDER BY c.position ASC`,
-		sourceID, ownedFlag,
-	)
+		ORDER BY c.position ASC`, lastPlayedExpr)
+
+	rows, err := r.db.QueryContext(ctx, query, sourceID, ownedFlag)
 	if err != nil {
 		return nil, fmt.Errorf("load enriched charts (attached) %q: %w", sourceID, err)
 	}
@@ -338,7 +351,7 @@ func scanEnrichedRows(rows *sql.Rows, sourceID string) ([]domain.EnrichedChart, 
 			c            domain.SourceChart
 			rawJSON      string
 			isOwned      bool
-			lastPlayedAt sql.NullString // 現状は常に NULL、v2 でカラム化予定
+			lastPlayedAt sql.NullInt64
 		)
 		if err := rows.Scan(
 			&c.Position, &c.Symbol, &c.MD5, &c.SHA256, &c.Level, &c.Title, &c.Artist,
@@ -353,8 +366,10 @@ func scanEnrichedRows(rows *sql.Rows, sourceID string) ([]domain.EnrichedChart, 
 			}
 		}
 		ec := domain.EnrichedChart{SourceChart: c, IsOwned: isOwned}
-		// lastPlayedAt は今回常に NULL のため Valid=false → ec.LastPlayedAt は nil
-		_ = lastPlayedAt
+		if lastPlayedAt.Valid && lastPlayedAt.Int64 > 0 {
+			t := time.Unix(lastPlayedAt.Int64, 0).UTC()
+			ec.LastPlayedAt = &t
+		}
 		out = append(out, ec)
 	}
 	return out, rows.Err()

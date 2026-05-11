@@ -52,7 +52,7 @@ func newHTTPFixture(t *testing.T) *httpFixture {
 	db.SetMaxOpenConns(1)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	attacher := persistence.NewSongdataAttacher(db, stubClock{t: time.Date(2026, 5, 7, 12, 0, 0, 0, time.Local)}, logger)
-	srcRepo := persistence.NewSourceTableRepoSQL(db, attacher)
+	srcRepo := persistence.NewSourceTableRepoSQL(db, attacher, nil)
 	pubRepo := persistence.NewPublishedTableRepoSQL(db)
 	store := usecase.NewPickResultStore()
 	pubUC := usecase.NewPublishedTableUseCase(pubRepo, srcRepo, &stubIDGen{}, logger)
