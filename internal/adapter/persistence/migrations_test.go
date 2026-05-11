@@ -115,6 +115,56 @@ func TestRunMigrations_UpgradeV1ToV2_DropsOldPublishedTableAndCreatesNewTables(t
 	require.Contains(t, tableColumns(t, db, "published_table_level_mapping"), "source_level")
 }
 
+func TestRunMigrations_AddsWeightModeColumns(t *testing.T) {
+	dir := t.TempDir()
+	db, err := OpenDB(filepath.Join(dir, "test.db"))
+	require.NoError(t, err)
+	defer db.Close()
+	require.NoError(t, RunMigrations(db))
+
+	cols := tableColumns(t, db, "published_table")
+	require.Contains(t, cols, "weight_mode")
+	require.Contains(t, cols, "weight_param_x")
+}
+
+func TestRunMigrations_BackfillsWeightDefaults(t *testing.T) {
+	dir := t.TempDir()
+	db, err := OpenDB(filepath.Join(dir, "test.db"))
+	require.NoError(t, err)
+	defer db.Close()
+
+	require.NoError(t, RunMigrations(db))
+	_, err = db.Exec(`INSERT INTO published_table(id, slug, display_name) VALUES('p1','s1','t1')`)
+	require.NoError(t, err)
+
+	require.NoError(t, RunMigrations(db))
+	var mode string
+	var x int
+	require.NoError(t, db.QueryRow(
+		`SELECT weight_mode, weight_param_x FROM published_table WHERE id='p1'`,
+	).Scan(&mode, &x))
+	require.Equal(t, "off", mode)
+	require.Equal(t, 10, x)
+}
+
+func TestRunMigrations_WeightColumnsAddedAreIdempotent(t *testing.T) {
+	dir := t.TempDir()
+	db, err := OpenDB(filepath.Join(dir, "test.db"))
+	require.NoError(t, err)
+	defer db.Close()
+	require.NoError(t, RunMigrations(db))
+	require.NoError(t, RunMigrations(db))
+	require.NoError(t, RunMigrations(db))
+	cols := tableColumns(t, db, "published_table")
+	count := 0
+	for _, c := range cols {
+		if c == "weight_mode" {
+			count++
+		}
+	}
+	require.Equal(t, 1, count)
+}
+
 // tableColumns は対象テーブルのカラム名を返す。
 func tableColumns(t *testing.T, db *sql.DB, table string) []string {
 	t.Helper()

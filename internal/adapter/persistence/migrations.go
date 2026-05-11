@@ -113,6 +113,24 @@ func RunMigrations(db *sql.DB) error {
 		}
 	}
 
+	// v2 への追加カラム (最終プレイ日時優先ピック)。pragma_table_info で冪等化。
+	if !columnExists(db, "published_table", "weight_mode") {
+		if _, err := db.Exec(
+			`ALTER TABLE published_table
+			   ADD COLUMN weight_mode TEXT NOT NULL DEFAULT 'off'`,
+		); err != nil {
+			return fmt.Errorf("alter add weight_mode: %w", err)
+		}
+	}
+	if !columnExists(db, "published_table", "weight_param_x") {
+		if _, err := db.Exec(
+			`ALTER TABLE published_table
+			   ADD COLUMN weight_param_x INTEGER NOT NULL DEFAULT 10`,
+		); err != nil {
+			return fmt.Errorf("alter add weight_param_x: %w", err)
+		}
+	}
+
 	// schema_version を書き込む
 	if _, err := db.Exec(
 		`INSERT OR REPLACE INTO config(key, value) VALUES('schema_version', ?)`,
@@ -122,4 +140,24 @@ func RunMigrations(db *sql.DB) error {
 	}
 
 	return nil
+}
+
+// columnExists は対象テーブルに指定カラムが存在するかを返す。
+// マイグレーションの冪等化に使う。
+func columnExists(db *sql.DB, table, column string) bool {
+	rows, err := db.Query(`SELECT name FROM pragma_table_info(?)`, table)
+	if err != nil {
+		return false
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			return false
+		}
+		if n == column {
+			return true
+		}
+	}
+	return false
 }
