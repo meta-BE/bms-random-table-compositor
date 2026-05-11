@@ -41,6 +41,7 @@ type Services struct {
 	PickResultStore       *usecase.PickResultStore
 	DashboardUseCase      *usecase.DashboardUseCase
 	SongdataAttacher      *persistence.SongdataAttacher
+	ScoreDBAttacher       *persistence.ScoreDBAttacher
 }
 
 // Bootstrap は Services を構築する（DB接続・マイグレーション・ロガー・各UseCase初期化）。
@@ -84,7 +85,8 @@ func Bootstrap() (*Services, error) {
 
 	systemClock := clock.System{}
 	sourceAttacher := persistence.NewSongdataAttacher(db, systemClock, lg)
-	sourceRepo := persistence.NewSourceTableRepoSQL(db, sourceAttacher, nil)
+	scoreAttacher := persistence.NewScoreDBAttacher(db, systemClock, lg)
+	sourceRepo := persistence.NewSourceTableRepoSQL(db, sourceAttacher, scoreAttacher)
 
 	// 既存ソース表で level_order_json が空のものを charts から自動補完する。
 	// header.json に level_order を含まない BMS 表 (例: 一部の satellite/stella) で、
@@ -110,6 +112,20 @@ func Bootstrap() (*Services, error) {
 		} else if configuredPath != "" {
 			if attachErr := sourceAttacher.Attach(bgCtx, configuredPath); attachErr != nil {
 				lg.Warn("startup songdata attach failed", "err", attachErr, "path", configuredPath)
+			}
+		}
+		cancel()
+	}
+
+	// 起動時に score.db が設定済みなら ATTACH を試みる (失敗しても起動継続)
+	{
+		bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		scorePath, err := configUC.GetScoreDBPath(bgCtx)
+		if err != nil {
+			lg.Warn("read score_db_path failed", "err", err)
+		} else if scorePath != "" {
+			if attachErr := scoreAttacher.Attach(bgCtx, scorePath); attachErr != nil {
+				lg.Warn("startup score attach failed", "err", attachErr, "path", scorePath)
 			}
 		}
 		cancel()
@@ -163,6 +179,21 @@ func Bootstrap() (*Services, error) {
 		pickUC.InvalidateAll()
 	})
 
+	// score_db_path 変更時に sc を再アタッチ + ピックキャッシュを clear
+	configUC.AddScoreDBPathChangeHook(func() {
+		bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		newPath, err := configUC.GetScoreDBPath(bgCtx)
+		if err != nil {
+			lg.Warn("get score_db_path failed", "err", err)
+			return
+		}
+		if err := scoreAttacher.ReAttach(bgCtx, newPath); err != nil {
+			lg.Warn("re-attach score failed", "err", err, "path", newPath)
+		}
+		pickUC.InvalidateAll()
+	})
+
 	httpFactory := func(addr string) usecase.HTTPServer {
 		return httpserver.New(addr, httpserver.Deps{
 			Pick:      pickUC,
@@ -192,6 +223,7 @@ func Bootstrap() (*Services, error) {
 		PickResultStore:       pickStore,
 		DashboardUseCase:      dashboardUC,
 		SongdataAttacher:      sourceAttacher,
+		ScoreDBAttacher:       scoreAttacher,
 	}, nil
 }
 
