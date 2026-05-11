@@ -17,6 +17,7 @@
 /testdata/*.db
 /testdata/satellite_data.json
 /testdata/satellite_header.json
+/testdata/sl0_md5s.json
 
 # OS / Editor
 .DS_Store
