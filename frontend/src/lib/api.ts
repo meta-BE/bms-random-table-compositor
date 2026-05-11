@@ -61,6 +61,8 @@ export type AddSourceTableRequest = { url: string };
 
 export type RefreshMode = 'per_request' | 'daily' | 'manual';
 
+export type WeightMode = 'off' | 'probability' | 'sort';
+
 export interface PublishedTableLevelMappingDTO {
   id: string;
   sourceTableId: string;
@@ -84,6 +86,8 @@ export interface PublishedTableDTO {
   symbol: string;
   ownedOnly: boolean;
   refreshMode: RefreshMode;
+  weightMode: WeightMode;
+  weightParamX: number;
   sortOrder: number;
   levels: PublishedTableLevelDTO[];
 }
@@ -106,6 +110,8 @@ export interface CreatePublishedTableRequest {
   symbol: string;
   ownedOnly: boolean;
   refreshMode: RefreshMode;
+  weightMode: WeightMode;
+  weightParamX: number;
   levels: PublishedTableLevelInputDTO[];
 }
 

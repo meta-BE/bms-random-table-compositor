@@ -6,6 +6,7 @@
     type PublishedTableDTO,
     type SourceTableDTO,
     type RefreshMode,
+    type WeightMode,
     type ServerConfig,
     type PublishedTableLevelInputDTO,
   } from '../api';
@@ -35,11 +36,29 @@
     symbol: '',
     ownedOnly: false,
     refreshMode: 'manual' as RefreshMode,
+    weightMode: 'off' as WeightMode,
+    weightParamX: 10,
     sortOrder: 0,
     levels: [] as PublishedTableLevelInputDTO[],
   };
   let formError = '';
+  let weightParamXError = '';
   let saving = false;
+
+  // weightMode が probability の場合のみ X を 2〜10000 の整数として検証する。
+  function validateWeightParamX(): boolean {
+    if (form.weightMode !== 'probability') {
+      weightParamXError = '';
+      return true;
+    }
+    const x = form.weightParamX;
+    if (!Number.isInteger(x) || x < 2 || x > 10000) {
+      weightParamXError = 'X は 2〜10000 の整数で指定してください';
+      return false;
+    }
+    weightParamXError = '';
+    return true;
+  }
   let slugStatus: 'idle' | 'ok' | 'invalid_format' | 'reserved' | 'duplicate' = 'idle';
   let slugDirty = false;
 
@@ -114,12 +133,15 @@
       symbol: '',
       ownedOnly: false,
       refreshMode: 'manual',
+      weightMode: 'off',
+      weightParamX: 10,
       sortOrder: 0,
       levels: [],
     };
     slugStatus = 'idle';
     slugDirty = false;
     formError = '';
+    weightParamXError = '';
     formOpen = true;
   }
 
@@ -133,6 +155,8 @@
         symbol: full.symbol,
         ownedOnly: full.ownedOnly,
         refreshMode: full.refreshMode,
+        weightMode: (full.weightMode as WeightMode) ?? 'off',
+        weightParamX: full.weightParamX ?? 10,
         sortOrder: full.sortOrder,
         levels: full.levels.map((lv) => ({
           name: lv.name,
@@ -147,6 +171,7 @@
       slugStatus = 'ok';
       slugDirty = true;
       formError = '';
+      weightParamXError = '';
       formOpen = true;
     } catch (e) {
       showToast(`公開表の取得に失敗: ${(e as Error).message}`, 'error');
@@ -197,6 +222,10 @@
       formError = 'slug が不正です';
       return;
     }
+    if (!validateWeightParamX()) {
+      formError = weightParamXError;
+      return;
+    }
     saving = true;
     formError = '';
     try {
@@ -219,6 +248,8 @@
           symbol: form.symbol,
           ownedOnly: form.ownedOnly,
           refreshMode: form.refreshMode,
+          weightMode: form.weightMode,
+          weightParamX: form.weightParamX,
           levels: form.levels,
         });
       } else {
@@ -229,6 +260,8 @@
           symbol: form.symbol,
           ownedOnly: form.ownedOnly,
           refreshMode: form.refreshMode,
+          weightMode: form.weightMode,
+          weightParamX: form.weightParamX,
           sortOrder: form.sortOrder,
           levels: form.levels,
         });
@@ -441,6 +474,34 @@
             <option value="daily">日次 (同一日付内で固定)</option>
             <option value="manual">手動 (再ピックボタンまで固定)</option>
           </select>
+        </div>
+        <div class="form-control w-full">
+          <label class="label py-1"><span class="label-text">最終プレイ日時優先</span></label>
+          <div class="join">
+            <select
+              class="join-item select select-bordered select-sm"
+              bind:value={form.weightMode}
+              on:change={validateWeightParamX}
+            >
+              <option value="off">OFF</option>
+              <option value="probability">確率 (X 倍まで偏らせる)</option>
+              <option value="sort">完全日時順ソート</option>
+            </select>
+            {#if form.weightMode === 'probability'}
+              <input
+                class="join-item input input-bordered input-sm w-24"
+                type="number"
+                min="2"
+                max="10000"
+                step="1"
+                bind:value={form.weightParamX}
+                on:input={validateWeightParamX}
+              />
+            {/if}
+          </div>
+          {#if weightParamXError}
+            <label class="label py-1"><span class="label-text-alt text-error">{weightParamXError}</span></label>
+          {/if}
         </div>
 
         {#if !(formMode === 'create' && createKind === 'wizard')}
