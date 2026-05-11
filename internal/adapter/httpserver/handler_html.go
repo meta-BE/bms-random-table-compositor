@@ -2,7 +2,9 @@ package httpserver
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/meta-BE/bms-random-table-compositor/internal/domain"
 	"github.com/meta-BE/bms-random-table-compositor/internal/usecase"
@@ -28,13 +30,14 @@ type htmlLevel struct {
 // Level は Symbol+Level を結合済みの文字列 (例: "sl0", "⭐3")。
 // LR2IRURL/URL/URLDiff は空文字列のとき該当リンクを描画しない。
 type htmlChart struct {
-	Level    string
-	Title    string
-	Artist   string
-	LR2IRURL string
-	URL      string
-	URLDiff  string
-	Owned    bool
+	Level      string
+	Title      string
+	Artist     string
+	LR2IRURL   string
+	URL        string
+	URLDiff    string
+	Owned      bool
+	LastPlayed string
 }
 
 const lr2irRankingURLPrefix = "http://www.dream-pro.info/~lavalse/LR2IR/search.cgi?mode=ranking&bmsmd5="
@@ -83,14 +86,19 @@ func buildHTMLPageData(pub domain.PublishedTable, r domain.PickResult) htmlPageD
 			}
 			url, _ := c.Raw["url"].(string)
 			urlDiff, _ := c.Raw["url_diff"].(string)
+			lastPlayed := "未プレイ"
+			if c.LastPlayedAt != nil {
+				lastPlayed = formatRelativeDuration(r.GeneratedAt.Sub(*c.LastPlayedAt))
+			}
 			charts = append(charts, htmlChart{
-				Level:    symbol + c.Level,
-				Title:    c.Title,
-				Artist:   c.Artist,
-				LR2IRURL: lr2irURL(c.MD5),
-				URL:      url,
-				URLDiff:  urlDiff,
-				Owned:    owned,
+				Level:      symbol + c.Level,
+				Title:      c.Title,
+				Artist:     c.Artist,
+				LR2IRURL:   lr2irURL(c.MD5),
+				URL:        url,
+				URLDiff:    urlDiff,
+				Owned:      owned,
+				LastPlayed: lastPlayed,
 			})
 		}
 		if len(charts) == 0 {
@@ -107,6 +115,34 @@ func buildHTMLPageData(pub domain.PublishedTable, r domain.PickResult) htmlPageD
 		IsManualMode: pub.Pick.RefreshMode == domain.RefreshModeManual,
 		Levels:       levels,
 	}
+}
+
+// formatRelativeDuration は経過時間を相対表記に変換する。
+// 秒 / 時間 / 日 / ヶ月(30日) / 年(365日) の 5 単位で表示し、分単位は使わない。
+// 60秒以上 1時間未満は "1時間前" に丸める。負の値 (時計ずれ) は 0 にクランプ。
+func formatRelativeDuration(d time.Duration) string {
+	if d < 0 {
+		d = 0
+	}
+	secs := int64(d.Seconds())
+	if secs < 60 {
+		return fmt.Sprintf("%d秒前", secs)
+	}
+	hours := secs / 3600
+	if hours < 24 {
+		if hours < 1 {
+			hours = 1
+		}
+		return fmt.Sprintf("%d時間前", hours)
+	}
+	days := hours / 24
+	if days < 30 {
+		return fmt.Sprintf("%d日前", days)
+	}
+	if days < 365 {
+		return fmt.Sprintf("%dヶ月前", days/30)
+	}
+	return fmt.Sprintf("%d年前", days/365)
 }
 
 // lr2irURL は md5 が非空のときのみ LR2IR ranking URL を返す。

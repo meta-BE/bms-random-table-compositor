@@ -15,6 +15,7 @@ table.chart { table-layout: fixed; border-collapse: collapse; width: 100%; font-
 table.chart col.col-level  { width: 5em; }
 table.chart col.col-title  { width: auto; }
 table.chart col.col-artist { width: auto; }
+table.chart col.col-last-played { width: 7em; }
 table.chart col.col-diff   { width: 7em; }
 table.chart th, table.chart td { padding: 4px 8px; border-bottom: 1px solid #eee; text-align: left; line-height: 1.4; vertical-align: middle; }
 table.chart td.title-cell { white-space: normal; word-break: break-word; }
@@ -41,6 +42,7 @@ tr.unowned td { color: #999; }
           <col class="col-level">
           <col class="col-title">
           <col class="col-artist">
+          <col class="col-last-played">
           <col class="col-diff">
         </colgroup>
         <tbody>
@@ -49,6 +51,7 @@ tr.unowned td { color: #999; }
             <td class="other-cell">{{.Level}}</td>
             <td class="title-cell">{{if .LR2IRURL}}<a href="{{.LR2IRURL}}" target="_blank" rel="noopener">{{.Title}}</a>{{else}}{{.Title}}{{end}}</td>
             <td class="other-cell">{{if .URL}}<a href="{{.URL}}" target="_blank" rel="noopener">{{.Artist}}</a>{{else}}{{.Artist}}{{end}}</td>
+            <td class="other-cell">{{.LastPlayed}}</td>
             <td class="other-cell">{{if .URLDiff}}<a href="{{.URLDiff}}" target="_blank" rel="noopener">差分DL</a>{{end}}</td>
           </tr>
         {{end}}
