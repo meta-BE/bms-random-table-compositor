@@ -52,11 +52,19 @@ func (a *ScoreDBAttacher) Attach(ctx context.Context, path string) error {
 		return fmt.Errorf("attach score %q: %w", path, err)
 	}
 
+	// score テーブルの存在確認も兼ねて COUNT を取る。失敗したら誤ったファイル
+	// (例: songdata.db を選択してしまった場合) なので ATTACH をロールバックして
+	// エラー返却する。後続クエリ ("no such table: sc.score") を防ぎ、設定画面で
+	// 即座にエラーを表示できるようにする。
 	var count int
 	row := a.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM sc.score")
 	if err := row.Scan(&count); err != nil {
-		a.recordError(fmt.Sprintf("count sc.score: %v", err))
-		count = 0
+		msg := fmt.Sprintf("score テーブルが見つかりません (%s に score テーブルが無いか、beatoraja の score.db ではありません): %v", path, err)
+		a.recordError(msg)
+		if _, derr := a.db.ExecContext(ctx, "DETACH DATABASE sc"); derr != nil {
+			a.log.Warn("detach after count failure also failed", "err", derr)
+		}
+		return fmt.Errorf("validate sc.score %q: %w", path, err)
 	}
 
 	now := a.clock.Now()
