@@ -17,18 +17,20 @@ import (
 // PickUseCase はピック生成を担う。
 // docs/superpowers/specs/2026-05-10-multi-source-table-composition-design.md §3 の
 // フェーズ 1 (各マッピングから m 曲) + フェーズ 2 (合計 n 曲まで補填) を実装する。
+// 重み付けは docs/superpowers/specs/2026-05-11-last-played-pick-weighting-design.md §5 に従う。
 type PickUseCase struct {
-	pubRepo  port.PublishedTableRepo
-	srcRepo  port.SourceTableRepo
-	store    *PickResultStore
-	clock    port.Clock
-	randNew  port.RandSourceFactory
-	log      *slog.Logger
-	weighter port.Weighter
+	pubRepo         port.PublishedTableRepo
+	srcRepo         port.SourceTableRepo
+	store           *PickResultStore
+	clock           port.Clock
+	randNew         port.RandSourceFactory
+	log             *slog.Logger
+	weighterFactory port.WeighterFactory
 }
 
 // NewPickUseCase は新しい PickUseCase を作る。
-// weighter は重み付き非復元サンプリング時の重み関数。MVP では UniformWeighter を渡す。
+// weighterFactory は PickConfig から Weighter を選び出すファクトリ。
+// 公開表ごとの WeightMode (off / probability / sort) に応じて切り替える。
 func NewPickUseCase(
 	pubRepo port.PublishedTableRepo,
 	srcRepo port.SourceTableRepo,
@@ -36,11 +38,12 @@ func NewPickUseCase(
 	clock port.Clock,
 	randNew port.RandSourceFactory,
 	log *slog.Logger,
-	weighter port.Weighter,
+	weighterFactory port.WeighterFactory,
 ) *PickUseCase {
 	return &PickUseCase{
 		pubRepo: pubRepo, srcRepo: srcRepo, store: store,
-		clock: clock, randNew: randNew, log: log, weighter: weighter,
+		clock: clock, randNew: randNew, log: log,
+		weighterFactory: weighterFactory,
 	}
 }
 
@@ -122,7 +125,7 @@ func (u *PickUseCase) regenerate(ctx context.Context, pub domain.PublishedTable)
 	for _, lv := range pub.Levels {
 		levelSeed := baseSeed ^ int64(fnv32(lv.ID))
 		rng := rand.New(u.randNew(levelSeed))
-		picked, err := u.pickLevel(ctx, lv, chartsBySrcLevel, rng, now)
+		picked, err := u.pickLevel(ctx, lv, chartsBySrcLevel, rng, now, pub.Pick)
 		if err != nil {
 			return domain.PickResult{}, fmt.Errorf("pick level %q: %w", lv.Name, err)
 		}
@@ -178,10 +181,18 @@ func (u *PickUseCase) loadSourceCharts(ctx context.Context, pub domain.Published
 // chartsBySrcLevel は regenerate でロード・バケット化済みの「ソース表 ID → ソースレベル → EnrichedChart[]」マップ。
 // dedup の主キーは MD5、空なら SHA256 をフォールバック。
 // 出力する PickedChart は EnrichedChart (ソース由来) + PublicLevel (公開レベル名 lv.Name) を持つ。
+//
+// WeightMode による分岐:
+//   - off / probability: weightedSampleWithoutReplacement を使う（Weighter は Factory から取得）
+//   - sort:              pickSortDeterministic で (aOf 降順, mappingIdx, position) ソート
+//
+// aOf は unionPool 全体で max(now-LastPlayedAt) を分母にした正規化経過時間 ∈ [0,1]。
+// 未プレイは 1.0 として最古と同等扱い。プレイ済み全員同時刻 / 全員未プレイなら 0 で一様に退化。
 func (u *PickUseCase) pickLevel(
 	ctx context.Context, lv domain.PublishedTableLevel,
 	chartsBySrcLevel map[string]map[string][]domain.EnrichedChart,
 	rng *rand.Rand, now time.Time,
+	pickCfg domain.PickConfig,
 ) ([]domain.PickedChart, error) {
 	pools := make([][]domain.EnrichedChart, len(lv.Mappings))
 	for i, mp := range lv.Mappings {
@@ -212,46 +223,81 @@ func (u *PickUseCase) pickLevel(
 		}
 	}
 
+	// a の分母: unionPool 内の最大経過秒数。プレイ済み全員同時刻 / 全員未プレイなら 0。
+	maxAgeSec := int64(0)
+	for _, c := range unionPool {
+		if c.LastPlayedAt == nil {
+			continue
+		}
+		age := now.Unix() - c.LastPlayedAt.Unix()
+		if age < 0 {
+			age = 0
+		}
+		if age > maxAgeSec {
+			maxAgeSec = age
+		}
+	}
+	aOf := func(c domain.EnrichedChart) float64 {
+		if c.LastPlayedAt == nil {
+			return 1.0
+		}
+		if maxAgeSec <= 0 {
+			return 0.0
+		}
+		age := now.Unix() - c.LastPlayedAt.Unix()
+		if age < 0 {
+			age = 0
+		}
+		return float64(age) / float64(maxAgeSec)
+	}
+
 	type pickedItem struct {
 		chart      domain.EnrichedChart
 		mappingIdx int
 	}
-
 	var picked []pickedItem
 	pickedKeys := map[string]struct{}{}
 
-	// フェーズ 1: 各マッピングから m 曲。pools[i] は LoadCharts の position 昇順を保つ。
-	m := lv.PerMappingPick
-	for i := range pools {
-		avail := make([]domain.EnrichedChart, 0, len(pools[i]))
-		for _, c := range pools[i] {
-			if _, ok := pickedKeys[keyOf(c)]; ok {
-				continue
+	if pickCfg.WeightMode == domain.WeightModeSort {
+		sortPicked := pickSortDeterministic(pools, unionPool, aOf, keyOf, chartOriginMapping, lv.PerMappingPick, lv.TotalPick)
+		for _, p := range sortPicked {
+			pickedKeys[keyOf(p.chart)] = struct{}{}
+			picked = append(picked, pickedItem{chart: p.chart, mappingIdx: p.mappingIdx})
+		}
+	} else {
+		w := u.weighterFactory.For(pickCfg)
+		// フェーズ 1: 各マッピングから m 曲。pools[i] は LoadCharts の position 昇順を保つ。
+		m := lv.PerMappingPick
+		for i := range pools {
+			avail := make([]domain.EnrichedChart, 0, len(pools[i]))
+			for _, c := range pools[i] {
+				if _, ok := pickedKeys[keyOf(c)]; ok {
+					continue
+				}
+				avail = append(avail, c)
 			}
-			avail = append(avail, c)
-		}
-		taken := weightedSampleWithoutReplacement(ctx, avail, m, u.weighter, rng, now)
-		for _, c := range taken {
-			pickedKeys[keyOf(c)] = struct{}{}
-			picked = append(picked, pickedItem{chart: c, mappingIdx: i})
-		}
-	}
-
-	// フェーズ 2: sum(picked) < n なら unionPool 残りから補填。
-	need := lv.TotalPick - len(picked)
-	if need > 0 {
-		remaining := make([]domain.EnrichedChart, 0, len(unionPool))
-		for _, c := range unionPool {
-			if _, ok := pickedKeys[keyOf(c)]; ok {
-				continue
+			taken := weightedSampleWithoutReplacement(ctx, avail, m, w, aOf, rng)
+			for _, c := range taken {
+				pickedKeys[keyOf(c)] = struct{}{}
+				picked = append(picked, pickedItem{chart: c, mappingIdx: i})
 			}
-			remaining = append(remaining, c)
 		}
-		taken := weightedSampleWithoutReplacement(ctx, remaining, need, u.weighter, rng, now)
-		for _, c := range taken {
-			k := keyOf(c)
-			pickedKeys[k] = struct{}{}
-			picked = append(picked, pickedItem{chart: c, mappingIdx: chartOriginMapping[k]})
+		// フェーズ 2: sum(picked) < n なら unionPool 残りから補填。
+		need := lv.TotalPick - len(picked)
+		if need > 0 {
+			remaining := make([]domain.EnrichedChart, 0, len(unionPool))
+			for _, c := range unionPool {
+				if _, ok := pickedKeys[keyOf(c)]; ok {
+					continue
+				}
+				remaining = append(remaining, c)
+			}
+			taken := weightedSampleWithoutReplacement(ctx, remaining, need, w, aOf, rng)
+			for _, c := range taken {
+				k := keyOf(c)
+				pickedKeys[k] = struct{}{}
+				picked = append(picked, pickedItem{chart: c, mappingIdx: chartOriginMapping[k]})
+			}
 		}
 	}
 
@@ -270,12 +316,90 @@ func (u *PickUseCase) pickLevel(
 	return out, nil
 }
 
+// sortPickedItem は pickSortDeterministic が返す内部表現。
+type sortPickedItem struct {
+	chart      domain.EnrichedChart
+	mappingIdx int
+}
+
+// pickSortDeterministic は WeightMode=sort 経路のピックを行う。
+// phase1: マッピングごとに「(aOf 降順, position 昇順)」で上から m 件
+// phase2: union 残りから「(aOf 降順, mappingIdx 昇順, position 昇順)」で TotalPick まで補填
+// 乱数を使わない決定論的ソート。aOf=1.0 (未プレイ) と最古プレイ済みは同じスコアで隣接する。
+func pickSortDeterministic(
+	pools [][]domain.EnrichedChart,
+	unionPool []domain.EnrichedChart,
+	aOf func(domain.EnrichedChart) float64,
+	keyOf func(domain.EnrichedChart) string,
+	chartOriginMapping map[string]int,
+	perMapping int, totalPick int,
+) []sortPickedItem {
+	var picked []sortPickedItem
+	pickedKeys := map[string]struct{}{}
+
+	// phase1: 各マッピング pool を a 降順ソートし上から m 件
+	for i, p := range pools {
+		sortedPool := make([]domain.EnrichedChart, len(p))
+		copy(sortedPool, p)
+		sort.SliceStable(sortedPool, func(x, y int) bool {
+			ax, ay := aOf(sortedPool[x]), aOf(sortedPool[y])
+			if ax != ay {
+				return ax > ay
+			}
+			return sortedPool[x].Position < sortedPool[y].Position
+		})
+		taken := 0
+		for _, c := range sortedPool {
+			if taken >= perMapping {
+				break
+			}
+			k := keyOf(c)
+			if _, ok := pickedKeys[k]; ok {
+				continue
+			}
+			pickedKeys[k] = struct{}{}
+			picked = append(picked, sortPickedItem{chart: c, mappingIdx: i})
+			taken++
+		}
+	}
+
+	// phase2: union 残りから (a 降順, mappingIdx 昇順, position 昇順) で補填
+	need := totalPick - len(picked)
+	if need > 0 {
+		remaining := make([]domain.EnrichedChart, 0, len(unionPool))
+		for _, c := range unionPool {
+			if _, ok := pickedKeys[keyOf(c)]; ok {
+				continue
+			}
+			remaining = append(remaining, c)
+		}
+		sort.SliceStable(remaining, func(x, y int) bool {
+			ax, ay := aOf(remaining[x]), aOf(remaining[y])
+			if ax != ay {
+				return ax > ay
+			}
+			ix := chartOriginMapping[keyOf(remaining[x])]
+			iy := chartOriginMapping[keyOf(remaining[y])]
+			if ix != iy {
+				return ix < iy
+			}
+			return remaining[x].Position < remaining[y].Position
+		})
+		for i := 0; i < need && i < len(remaining); i++ {
+			c := remaining[i]
+			picked = append(picked, sortPickedItem{chart: c, mappingIdx: chartOriginMapping[keyOf(c)]})
+		}
+	}
+	return picked
+}
+
 // weightedSampleWithoutReplacement は重み付き非復元サンプリング（k 件まで）。
 // 重み 0 以下の譜面は対象外。pool が k 件未満なら採れた件数だけ返す。
 // 累積重み + 線形走査による「ロト方式」を採用（pool 規模が高々数百〜数千なので O(k * |pool|) で十分）。
 func weightedSampleWithoutReplacement(
-	ctx context.Context, pool []domain.EnrichedChart, k int,
-	w port.Weighter, rng *rand.Rand, now time.Time,
+	_ context.Context, pool []domain.EnrichedChart, k int,
+	w port.Weighter, aOf func(domain.EnrichedChart) float64,
+	rng *rand.Rand,
 ) []domain.EnrichedChart {
 	if k <= 0 || len(pool) == 0 {
 		return nil
@@ -283,7 +407,7 @@ func weightedSampleWithoutReplacement(
 	weights := make([]float64, len(pool))
 	totalWeight := 0.0
 	for i, c := range pool {
-		wt := w.Weight(ctx, c, now)
+		wt := w.Weight(aOf(c))
 		if wt <= 0 {
 			weights[i] = 0
 			continue

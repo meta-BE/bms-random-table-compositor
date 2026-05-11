@@ -61,7 +61,7 @@ func newHTTPFixture(t *testing.T) *httpFixture {
 		stubClock{t: time.Date(2026, 5, 7, 12, 0, 0, 0, time.Local)},
 		port.RandSourceFactory(func(seed int64) port.RandSource { return randsrc.NewMathRandSource(seed) }),
 		logger,
-		weighter.UniformWeighter{},
+		weighter.Factory{},
 	)
 
 	mux := httpserver.NewMux(httpserver.Deps{Pick: pickUC, Pub: pubUC, Log: logger})

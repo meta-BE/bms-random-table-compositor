@@ -53,6 +53,14 @@ func newPickUCFixture(t *testing.T) *pickUCFixture {
 	return newPickUCFixtureWithWeighter(t, weighter.UniformWeighter{})
 }
 
+// stubWeighterFactory は固定の Weighter を返す port.WeighterFactory のテスト実装。
+// 既存テスト互換のため、newPickUCFixtureWithWeighter が指定 Weighter を Factory 経由で注入できるよう薄ラップする。
+type stubWeighterFactory struct {
+	w port.Weighter
+}
+
+func (f stubWeighterFactory) For(_ domain.PickConfig) port.Weighter { return f.w }
+
 // newPickUCFixtureWithWeighter は任意の Weighter を注入できる fixture コンストラクタ。
 // TestPickUseCase_WeighterFiltersZeroWeights など、特定の譜面の重みを 0 にしたいテスト用。
 func newPickUCFixtureWithWeighter(t *testing.T, w port.Weighter) *pickUCFixture {
@@ -62,7 +70,20 @@ func newPickUCFixtureWithWeighter(t *testing.T, w port.Weighter) *pickUCFixture 
 	clock := &mutableClock{t: time.Date(2026, 5, 7, 12, 0, 0, 0, time.Local)}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	store := usecase.NewPickResultStore()
-	uc := usecase.NewPickUseCase(pub, src, store, clock, newStubFactory(), logger, w)
+	uc := usecase.NewPickUseCase(pub, src, store, clock, newStubFactory(), logger, stubWeighterFactory{w: w})
+	return &pickUCFixture{uc: uc, pubRepo: pub, srcRepo: src, store: store, clock: clock}
+}
+
+// newPickUCFixtureWithFactory は port.WeighterFactory ごとそのまま注入できる fixture コンストラクタ。
+// 実 Factory (weighter.Factory{}) を使って PickConfig 由来の切り替えそのものをテストする用途。
+func newPickUCFixtureWithFactory(t *testing.T, factory port.WeighterFactory) *pickUCFixture {
+	t.Helper()
+	pub := newFakePublishedRepo()
+	src := newFakeSourceRepo()
+	clock := &mutableClock{t: time.Date(2026, 5, 7, 12, 0, 0, 0, time.Local)}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	store := usecase.NewPickResultStore()
+	uc := usecase.NewPickUseCase(pub, src, store, clock, newStubFactory(), logger, factory)
 	return &pickUCFixture{uc: uc, pubRepo: pub, srcRepo: src, store: store, clock: clock}
 }
 
@@ -96,6 +117,14 @@ func (f *pickUCFixture) seedPubWithLevels(
 	t *testing.T, id, slug string, ownedOnly bool, mode domain.RefreshMode, specs []levelSpec,
 ) {
 	t.Helper()
+	f.seedPubWithLevelsAndPick(t, id, slug, ownedOnly, domain.PickConfig{RefreshMode: mode}, specs)
+}
+
+// seedPubWithLevelsAndPick は PickConfig を直接渡せる版。WeightMode/WeightParamX を指定する WeightMode テスト用。
+func (f *pickUCFixture) seedPubWithLevelsAndPick(
+	t *testing.T, id, slug string, ownedOnly bool, pick domain.PickConfig, specs []levelSpec,
+) {
+	t.Helper()
 	levels := make([]domain.PublishedTableLevel, 0, len(specs))
 	for i, s := range specs {
 		mappings := make([]domain.PublishedTableLevelMapping, 0, len(s.mappings))
@@ -121,27 +150,22 @@ func (f *pickUCFixture) seedPubWithLevels(
 	_, err := f.pubRepo.Create(context.Background(), domain.PublishedTable{
 		ID: id, Slug: slug, DisplayName: slug,
 		OwnedOnly: ownedOnly,
-		Pick:      domain.PickConfig{RefreshMode: mode},
+		Pick:      pick,
 		Levels:    levels,
 	})
 	require.NoError(t, err)
 }
 
-// zeroWeightWeighter は特定 MD5 の譜面の重みを 0 にする Weighter。
-// TestPickUseCase_WeighterFiltersZeroWeights 用。
-type zeroWeightWeighter struct {
-	zeroMD5 string
-}
+// aZeroWeighter は aOf=0 (= unionPool 内で最新プレイ) の譜面の重みを 0 にする Weighter。
+// TestPickUseCase_WeighterFiltersZeroWeights では「skip 譜面の LastPlayedAt を now と同時刻」、
+// 「keep 譜面は LastPlayedAt=nil で未プレイ扱い (aOf=1)」と組み合わせて使う。
+type aZeroWeighter struct{}
 
-func (z zeroWeightWeighter) Weight(_ context.Context, c domain.EnrichedChart, _ time.Time) float64 {
-	if c.MD5 == z.zeroMD5 {
+func (aZeroWeighter) Weight(a float64) float64 {
+	if a == 0 {
 		return 0
 	}
 	return 1
-}
-
-func zeroWeightFor(md5 string) port.Weighter {
-	return zeroWeightWeighter{zeroMD5: md5}
 }
 
 // ---- 既存仕様から保持する基本テスト ----
@@ -460,13 +484,18 @@ func TestPickUseCase_Deterministic_DailyMode(t *testing.T) {
 }
 
 // Weighter で重み 0 を返した譜面はピック対象外になる。
-// pool に 2 曲（"keep", "skip"）、m=1, n=1 で skip の重みを 0 にすると必ず "keep" が返る。
+// pool に 2 曲（"keep", "skip"）、m=1, n=1。
+// skip の LastPlayedAt を now と同時刻にして aOf=0 を作り、
+// aZeroWeighter で「aOf=0 の重みは 0」とすることで skip が除外されることを確認する。
 func TestPickUseCase_WeighterFiltersZeroWeights(t *testing.T) {
-	f := newPickUCFixtureWithWeighter(t, zeroWeightFor("skip"))
+	f := newPickUCFixtureWithWeighter(t, aZeroWeighter{})
 	f.seedSource(t, "SRC1", []string{"5"}, domain.FetchStatusOK, []domain.SourceChart{
 		chartFixture("SRC1", "5", 0, "skip"),
 		chartFixture("SRC1", "5", 1, "keep"),
 	})
+	// skip = 最新 (aOf=0)、keep = 1 時間前 (aOf=1 = unionPool 内 max)。
+	f.srcRepo.setLastPlayed("skip", f.clock.t)
+	f.srcRepo.setLastPlayed("keep", f.clock.t.Add(-1*time.Hour))
 	f.seedPubWithLevels(t, "PUB1", "p1", false, domain.RefreshModePerRequest, []levelSpec{
 		{name: "5", m: 1, n: 1, mappings: []mappingSpec{{srcID: "SRC1", level: "5"}}},
 	})
@@ -600,4 +629,174 @@ func TestPickUseCase_OutputGroupedByMappingThenPosition(t *testing.T) {
 	require.Equal(t, []string{"SRC1", "SRC1", "SRC1", "SRC2", "SRC2"}, srcIDs)
 	// 各マッピング群内では Position 昇順
 	require.Equal(t, []int{10, 20, 30, 5, 15}, positions)
+}
+
+// ---- WeightMode 分岐 (Task 8 Step 8) ----
+
+// WeightMode=sort: 古い譜面ほど優先される決定論的ソート。
+// マッピング 0 内で「3 曲、それぞれ LastPlayedAt が古い順 c→b→a」だが pool は a, b, c の順に並ぶ。
+// PerMappingPick=2 で a 降順 (= 古い順) で c, b が選ばれ、結果は mappingIdx + Position 順で b, c。
+func TestPickUseCase_WeightModeSort_PicksOldestFirst(t *testing.T) {
+	f := newPickUCFixtureWithFactory(t, weighter.Factory{})
+	now := f.clock.t
+	f.seedSource(t, "SRC1", []string{"5"}, domain.FetchStatusOK, []domain.SourceChart{
+		chartFixture("SRC1", "5", 0, "a"), // 最新
+		chartFixture("SRC1", "5", 1, "b"), // 中間
+		chartFixture("SRC1", "5", 2, "c"), // 最古
+	})
+	f.srcRepo.setLastPlayed("a", now.Add(-1*time.Hour))
+	f.srcRepo.setLastPlayed("b", now.Add(-24*time.Hour))
+	f.srcRepo.setLastPlayed("c", now.Add(-72*time.Hour))
+	f.seedPubWithLevelsAndPick(t, "PUB1", "p1", false, domain.PickConfig{
+		RefreshMode: domain.RefreshModePerRequest,
+		WeightMode:  domain.WeightModeSort,
+	}, []levelSpec{
+		{name: "5", m: 2, n: 2, mappings: []mappingSpec{{srcID: "SRC1", level: "5"}}},
+	})
+
+	r, _, err := f.uc.PickBySlug(context.Background(), "p1")
+	require.NoError(t, err)
+	require.Len(t, r.Charts, 2)
+	// 出力順は (mappingIdx 昇順, Position 昇順)。同マッピングなので Position 昇順 → b(pos=1), c(pos=2)。
+	require.Equal(t, "b", r.Charts[0].MD5)
+	require.Equal(t, "c", r.Charts[1].MD5)
+}
+
+// WeightMode=sort + フェーズ 2: マッピング 1 にしか古い曲がない場合、フェーズ 2 で union から古い順に補填。
+func TestPickUseCase_WeightModeSort_PhaseTwoOrderedByAge(t *testing.T) {
+	f := newPickUCFixtureWithFactory(t, weighter.Factory{})
+	now := f.clock.t
+	// SRC1: a (最新), b (中間)
+	// SRC2: c (最古), d (やや新しい)
+	f.seedSource(t, "SRC1", []string{"5"}, domain.FetchStatusOK, []domain.SourceChart{
+		chartFixture("SRC1", "5", 0, "a"),
+		chartFixture("SRC1", "5", 1, "b"),
+	})
+	f.seedSource(t, "SRC2", []string{"5"}, domain.FetchStatusOK, []domain.SourceChart{
+		chartFixture("SRC2", "5", 0, "c"),
+		chartFixture("SRC2", "5", 1, "d"),
+	})
+	f.srcRepo.setLastPlayed("a", now.Add(-1*time.Hour))
+	f.srcRepo.setLastPlayed("b", now.Add(-12*time.Hour))
+	f.srcRepo.setLastPlayed("c", now.Add(-72*time.Hour))
+	f.srcRepo.setLastPlayed("d", now.Add(-6*time.Hour))
+	// m=1 → 各マッピング 1 曲、n=3 → フェーズ 2 で +1 曲
+	f.seedPubWithLevelsAndPick(t, "PUB1", "p1", false, domain.PickConfig{
+		RefreshMode: domain.RefreshModePerRequest,
+		WeightMode:  domain.WeightModeSort,
+	}, []levelSpec{
+		{name: "5", m: 1, n: 3, mappings: []mappingSpec{
+			{srcID: "SRC1", level: "5"},
+			{srcID: "SRC2", level: "5"},
+		}},
+	})
+
+	r, _, err := f.uc.PickBySlug(context.Background(), "p1")
+	require.NoError(t, err)
+	require.Len(t, r.Charts, 3)
+	// フェーズ 1: SRC1 最古 = b, SRC2 最古 = c
+	// フェーズ 2 残り: a(SRC1), d(SRC2) → 古い順 d→a。1 曲補填で d を採用。
+	// 出力 (mappingIdx 昇順, Position 昇順): SRC1.b → SRC2.c, SRC2.d (pos 0, 1)
+	md5s := make([]string, len(r.Charts))
+	for i, c := range r.Charts {
+		md5s[i] = c.MD5
+	}
+	require.Equal(t, []string{"b", "c", "d"}, md5s)
+}
+
+// WeightMode=probability + X=10000: 古い曲に大きく偏る (seed 固定で複数回試行)。
+// 古い曲 ("old") と新しい曲 ("new1"..."new4") 計 5 曲から 1 曲ピックを seed 固定で 1 回実行し、
+// X=10000 なら old (aOf=1) の重みは new (aOf≒0) の 10000 倍となり、old が選ばれる確率がほぼ 1。
+func TestPickUseCase_WeightModeProbability_BiasedToOlder(t *testing.T) {
+	f := newPickUCFixtureWithFactory(t, weighter.Factory{})
+	now := f.clock.t
+	charts := []domain.SourceChart{
+		chartFixture("SRC1", "5", 0, "old"),
+	}
+	for i := 1; i <= 4; i++ {
+		charts = append(charts, chartFixture("SRC1", "5", i, "new"+string(rune('0'+i))))
+	}
+	f.seedSource(t, "SRC1", []string{"5"}, domain.FetchStatusOK, charts)
+	f.srcRepo.setLastPlayed("old", now.Add(-100*time.Hour))
+	for i := 1; i <= 4; i++ {
+		f.srcRepo.setLastPlayed("new"+string(rune('0'+i)), now.Add(-1*time.Second))
+	}
+	f.seedPubWithLevelsAndPick(t, "PUB1", "p1", false, domain.PickConfig{
+		RefreshMode:  domain.RefreshModeDaily,
+		WeightMode:   domain.WeightModeProbability,
+		WeightParamX: 10000,
+	}, []levelSpec{
+		{name: "5", m: 1, n: 1, mappings: []mappingSpec{{srcID: "SRC1", level: "5"}}},
+	})
+
+	// Daily モード + 固定 clock なら決定論。X=10000 なら old が圧倒的に選ばれるはず。
+	r, _, err := f.uc.PickBySlug(context.Background(), "p1")
+	require.NoError(t, err)
+	require.Len(t, r.Charts, 1)
+	require.Equal(t, "old", r.Charts[0].MD5,
+		"X=10000 で old (aOf=1) の重みは new (aOf≒0) の 10000 倍。決定論シードでも old を引くはず")
+}
+
+// 全曲未プレイ: aOf 分母 = 0 → 全 aOf=0 → 一様ランダムへ退化する。
+// probability + X=10000 でも一様になるので、出力が一様 Weighter の場合と同じ譜面群になる。
+func TestPickUseCase_WeightModeProbability_AllUnplayedFallsBackToUniform(t *testing.T) {
+	build := func(mode domain.WeightMode) []string {
+		f := newPickUCFixtureWithFactory(t, weighter.Factory{})
+		f.seedSource(t, "SRC1", []string{"5"}, domain.FetchStatusOK, []domain.SourceChart{
+			chartFixture("SRC1", "5", 0, "a"),
+			chartFixture("SRC1", "5", 1, "b"),
+			chartFixture("SRC1", "5", 2, "c"),
+			chartFixture("SRC1", "5", 3, "d"),
+		})
+		// 全曲 LastPlayedAt = nil (= 未プレイ)
+		f.seedPubWithLevelsAndPick(t, "PUB1", "p1", false, domain.PickConfig{
+			RefreshMode:  domain.RefreshModeDaily,
+			WeightMode:   mode,
+			WeightParamX: 10000,
+		}, []levelSpec{
+			{name: "5", m: 2, n: 2, mappings: []mappingSpec{{srcID: "SRC1", level: "5"}}},
+		})
+		r, _, err := f.uc.PickBySlug(context.Background(), "p1")
+		require.NoError(t, err)
+		md5s := make([]string, len(r.Charts))
+		for i, c := range r.Charts {
+			md5s[i] = c.MD5
+		}
+		return md5s
+	}
+	off := build(domain.WeightModeOff)
+	prob := build(domain.WeightModeProbability)
+	require.Equal(t, off, prob, "全曲未プレイなら probability でも off と同じ (一様)")
+}
+
+// 未プレイ譜面と最古プレイ譜面が sort 出力で隣接する (どちらも aOf=1.0 同点)。
+// sort 経路では同点時 mappingIdx 昇順 + Position 昇順で安定。
+func TestPickUseCase_WeightModeSort_UnplayedTiedWithOldestPlayed(t *testing.T) {
+	f := newPickUCFixtureWithFactory(t, weighter.Factory{})
+	now := f.clock.t
+	f.seedSource(t, "SRC1", []string{"5"}, domain.FetchStatusOK, []domain.SourceChart{
+		chartFixture("SRC1", "5", 0, "oldest"),   // 最古プレイ → aOf=1
+		chartFixture("SRC1", "5", 1, "unplayed"), // 未プレイ → aOf=1 (同点)
+		chartFixture("SRC1", "5", 2, "recent"),   // 中間 → aOf<1
+	})
+	f.srcRepo.setLastPlayed("oldest", now.Add(-100*time.Hour))
+	f.srcRepo.setLastPlayed("recent", now.Add(-1*time.Hour))
+	// unplayed は setLastPlayed しない (= nil)
+	f.seedPubWithLevelsAndPick(t, "PUB1", "p1", false, domain.PickConfig{
+		RefreshMode: domain.RefreshModePerRequest,
+		WeightMode:  domain.WeightModeSort,
+	}, []levelSpec{
+		{name: "5", m: 2, n: 2, mappings: []mappingSpec{{srcID: "SRC1", level: "5"}}},
+	})
+
+	r, _, err := f.uc.PickBySlug(context.Background(), "p1")
+	require.NoError(t, err)
+	require.Len(t, r.Charts, 2)
+	// 同マッピング、同 aOf=1.0 の 2 曲。Position 昇順 → oldest(pos=0), unplayed(pos=1)
+	md5s := make([]string, len(r.Charts))
+	for i, c := range r.Charts {
+		md5s[i] = c.MD5
+	}
+	require.Equal(t, []string{"oldest", "unplayed"}, md5s,
+		"未プレイ譜面と最古プレイ譜面は aOf=1 で同点、出力は Position 昇順で隣接")
 }

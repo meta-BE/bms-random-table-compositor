@@ -144,7 +144,7 @@ func Bootstrap() (*Services, error) {
 	randFactory := port.RandSourceFactory(func(seed int64) port.RandSource {
 		return randsrc.NewMathRandSource(seed)
 	})
-	pickUC := usecase.NewPickUseCase(pubRepo, sourceRepo, pickStore, systemClock, randFactory, lg, weighter.UniformWeighter{})
+	pickUC := usecase.NewPickUseCase(pubRepo, sourceRepo, pickStore, systemClock, randFactory, lg, weighter.Factory{})
 	pickHandler := handler.NewPickHandler(pickUC)
 	songdataHandler := handler.NewSongdataHandler(sourceAttacher, configUC, pickUC)
 

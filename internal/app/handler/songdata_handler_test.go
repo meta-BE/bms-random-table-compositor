@@ -33,7 +33,7 @@ func TestSongdataHandler_GetStatus_NotAttached(t *testing.T) {
 	a := persistence.NewSongdataAttacher(db, clock.System{}, logger)
 	configUC := usecase.NewConfigUseCase(persistence.NewConfigStoreSQL(db))
 	// PickUseCase はテスト用に nil 引数で作成 (status のみ呼ぶので問題ない)
-	pickUC := usecase.NewPickUseCase(nil, nil, usecase.NewPickResultStore(), clock.System{}, nil, logger, weighter.UniformWeighter{})
+	pickUC := usecase.NewPickUseCase(nil, nil, usecase.NewPickResultStore(), clock.System{}, nil, logger, weighter.Factory{})
 
 	h := handler.NewSongdataHandler(a, configUC, pickUC)
 	h.SetContext(context.Background())

@@ -19,12 +19,13 @@ import (
 
 // fakeSourceRepo は port.SourceTableRepo のテスト用実装。
 type fakeSourceRepo struct {
-	mu       sync.Mutex
-	rows     map[string]domain.SourceTable
-	charts   map[string][]domain.SourceChart
-	ownedSet map[string]struct{}
-	saved    map[string]port.FetchedTable
-	errs     map[string]string
+	mu         sync.Mutex
+	rows       map[string]domain.SourceTable
+	charts     map[string][]domain.SourceChart
+	ownedSet   map[string]struct{}
+	lastPlayed map[string]time.Time // md5 → LastPlayedAt（無い譜面は nil = 未プレイ扱い）
+	saved      map[string]port.FetchedTable
+	errs       map[string]string
 }
 
 func newFakeSourceRepo() *fakeSourceRepo {
@@ -45,6 +46,17 @@ func (r *fakeSourceRepo) markOwned(md5s ...string) {
 	for _, m := range md5s {
 		r.ownedSet[m] = struct{}{}
 	}
+}
+
+// setLastPlayed は LoadCharts が返す EnrichedChart.LastPlayedAt を md5 ごとに上書きする。
+// WeightMode テスト (probability / sort) で経過時間に応じた重み付けを検証するために使う。
+func (r *fakeSourceRepo) setLastPlayed(md5 string, t time.Time) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.lastPlayed == nil {
+		r.lastPlayed = map[string]time.Time{}
+	}
+	r.lastPlayed[md5] = t
 }
 
 func (r *fakeSourceRepo) List(_ context.Context) ([]domain.SourceTable, error) {
@@ -132,6 +144,10 @@ func (r *fakeSourceRepo) LoadCharts(_ context.Context, id string, q port.ChartQu
 	for _, c := range src {
 		_, owned := r.ownedSet[c.MD5]
 		ec := domain.EnrichedChart{SourceChart: c, IsOwned: owned}
+		if t, ok := r.lastPlayed[c.MD5]; ok {
+			lp := t
+			ec.LastPlayedAt = &lp
+		}
 		if q.OwnedOnly && !owned {
 			continue
 		}
